@@ -197,7 +197,7 @@ function manualBody(){
   return `${lockReason()}${EDerr?`<div class="alert err"><ul>${EDerr.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:""}
   ${d.deleted?`<div class="alert err">Документ помечен на удаление и не участвует в расчёте.</div>`:""}
   <div class="grid2">
-    <label class="fld"><span>Хозяйственная операция <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS[d.type].map(o=>`<option ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
+    <label class="fld"><span>Хозяйственная операция <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS[d.type].map(o=>`<option value="${esc(o)}" ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
     <label class="fld"><span>Дата поступления <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="edSet('date',this.value)"></label>
     <label class="fld"><span>Организация <em>*</em></span><select ${dis} onchange="edSet('org',this.value)">${opts(DB.orgs.filter(o=>isActiveAt(o,d.date)||o.id===d.org),d.org)}</select></label>
     <label class="fld"><span>${cash?"Касса":"Банковский счёт"} <em>*</em></span><select ${dis} onchange="edSet('acc',this.value)">${optsAccounts(d.org,d.acc,{cash})}</select>
@@ -336,7 +336,7 @@ function transferBody(){
   ${d.deleted?`<div class="alert err">Документ помечен на удаление и не участвует в расчёте.</div>`:""}
   <p class="muted" style="margin-top:0">Одна операция — один ввод (ТР-69). В 1С это два документа (СБДС и ПБДС); при проведении здесь формируются две зеркальные записи: списание у отправителя и поступление у получателя.</p>
   <div class="grid2">
-    <label class="fld"><span>Вид <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS.ПЕР.map(o=>`<option ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
+    <label class="fld"><span>Вид <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS.ПЕР.map(o=>`<option value="${esc(o)}" ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
     <label class="fld"><span>Дата <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="ED.date=this.value;refreshModal()"></label>
     <label class="fld"><span>Номер документа 1С, если уже есть</span><input type="text" ${dis} value="${esc(d.no1c)}" onchange="ED.no1c=this.value"></label>
     <label class="fld"><span>Дата документа 1С</span><input type="date" ${dis} value="${d.date1c||""}" onchange="ED.date1c=this.value"></label>
