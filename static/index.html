@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Остатки по кошелькам</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <b>Остатки по кошелькам</b>
+      <span>MVP · ТЗ v1.3</span>
+    </div>
+    <nav id="nav"></nav>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <div class="field" id="userBox"></div>
+      <div class="field">
+        <label for="curDate">Дата отчётов</label>
+        <input type="date" id="curDate">
+      </div>
+      <span id="periodTag"></span>
+      <div class="grow"></div>
+      <span id="userTags" class="row"></span>
+      <span class="bell btn sm" id="bell" title="Уведомления">Уведомления <span class="dot hidden" id="bellDot"></span></span>
+      <span id="langBox"></span>
+    </div>
+    <div class="content" id="view"></div>
+  </div>
+</div>
+<div id="modalHost"></div>
+<div id="login" class="scrim hidden" style="background:var(--paper);align-items:center"></div>
+<div id="busy" class="hidden" role="status" aria-live="polite"></div>
+<script src="/static/js/core.js"></script>
+<script src="/static/js/shell.js"></script>
+<script src="/static/js/reports.js"></script>
+<script src="/static/js/docs.js"></script>
+<script src="/static/js/admin.js"></script>
+<script src="/static/js/i18n.js"></script>
+<script src="/static/js/i18n-en.js"></script>
+<script src="/static/js/init.js"></script>
+</body>
+</html>
