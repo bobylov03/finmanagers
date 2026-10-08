@@ -30,17 +30,20 @@ async function showLogin(){
   box.innerHTML = `<form class="modal" style="width:min(420px,100%)" onsubmit="event.preventDefault();doLogin()">
     <header><h3>Остатки по кошелькам</h3><div style="flex:1"></div><span id="langBoxLogin"></span></header>
     <div class="body stack">
-      ${fr ? `<div class="alert ok">Первый запуск: задайте пароль администратора (логин <b>${esc(STATUS.adminLogin)}</b>).</div>` : ""}
+      ${fr ? `<div class="alert ok">Первый запуск: задайте пароль администратора (логин <b>${esc(STATUS.adminLogin)}</b>). Запомните логин и пароль — они понадобятся для следующего входа.</div>` : ""}
       ${LOGIN_MSG ? `<div class="alert err">${esc(LOGIN_MSG)}</div>` : ""}
-      <label class="fld"><span>Логин</span><input type="text" id="lgLogin" autocomplete="username" value="${fr?esc(STATUS.adminLogin):""}" ${fr?"readonly":""}></label>
+      <label class="fld"><span>Логин</span><input type="text" id="lgLogin" autocomplete="username" value="${esc(fr ? STATUS.adminLogin : lastLogin())}" ${fr?"readonly":""} placeholder="например, admin"></label>
       <label class="fld"><span>Пароль</span><input type="password" id="lgPw" autocomplete="${fr?"new-password":"current-password"}"></label>
       ${fr ? `<label class="fld"><span>Повторите пароль</span><input type="password" id="lgPw2" autocomplete="new-password"></label>` : ""}
     </div>
     <footer><button class="btn primary" type="submit">${fr?"Задать пароль и войти":"Войти"}</button></footer></form>`;
   renderLang();
-  setTimeout(()=>{ const el = $(fr?"#lgPw":"#lgLogin"); if(el) el.focus(); }, 0);
+  setTimeout(()=>{ const el = $(fr || lastLogin() ? "#lgPw" : "#lgLogin"); if(el) el.focus(); }, 0);
   translateDom(box);
 }
+/** Последний логин, с которым входили в этом браузере — подставляется в форму */
+function lastLogin(){ try{ return localStorage.getItem("wallets-login") || ""; }catch(e){ return ""; } }
+function rememberLogin(l){ try{ localStorage.setItem("wallets-login", l); }catch(e){} }
 async function doLogin(){
   const login = $("#lgLogin").value.trim(), pw = $("#lgPw").value;
   let r;
@@ -55,6 +58,7 @@ async function doLogin(){
   } catch(e){ r = {ok:false, errors:["Нет связи с сервером"]}; }
   finally{ busy(false); }
   if(!r.ok){ LOGIN_MSG = r.errors.join("; "); return showLogin(); }
+  rememberLogin(STATUS && STATUS.firstRun ? STATUS.adminLogin : login);
   LOGIN_MSG = ""; await startSession();
 }
 function changeOwnPw(){

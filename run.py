@@ -22,6 +22,22 @@ def load_env(path=".env"):
 
 
 load_env()
+import sys  # noqa: E402
+
+if len(sys.argv) > 1 and sys.argv[1] == "reset-admin-password":
+    # Восстановление доступа: python run.py reset-admin-password [новый_пароль]
+    import getpass
+    from app.store import Store
+    from app.server import reset_admin_password
+    base = os.path.dirname(os.path.abspath(__file__))
+    db = os.environ.get("WALLETS_DB") or os.path.join(base, "data", "wallets.sqlite3")
+    pw = sys.argv[2] if len(sys.argv) > 2 else getpass.getpass("Новый пароль администратора (не короче 8 символов): ")
+    st = Store(db)
+    with st.tx():
+        adm = reset_admin_password(st, pw, "команда reset-admin-password")
+    print(f"Готово. Логин: {adm['login']}. Если сервер запущен, перезапустите его.")
+    sys.exit(0)
+
 from app.server import create_app  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

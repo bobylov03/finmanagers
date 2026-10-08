@@ -952,5 +952,9 @@ Object.assign(I18N, {
 "Документов нет": "No documents",
 "Операций нет": "No transactions",
 "Правил нет": "No rules",
-"Пусто — загрузите из 1С": "Empty — upload from 1C"
+"Пусто — загрузите из 1С": "Empty — upload from 1C",
+"Запомните логин и пароль — они понадобятся для следующего входа.": "Remember the login and password — you will need them to sign in next time.",
+"). Запомните логин и пароль — они понадобятся для следующего входа.": "). Remember the login and password — you will need them to sign in next time.",
+"например, admin": "e.g. admin",
+"Сброс пароля администратора": "Administrator password reset"
 });

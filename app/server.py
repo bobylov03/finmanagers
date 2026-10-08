@@ -36,6 +36,10 @@ def create_app(db_path=None, start_scheduler=True):
             store.add("users", {"id": "U_ADMIN", "name": "Администратор", "login": "admin", "email": "", "roles": ["admin"], "wallets": [],
                                 "active": True, "lang": "", "pw": None})
         store.purge_old_audit()
+        reset_pw = os.environ.get("ADMIN_RESET_PASSWORD", "")
+        if reset_pw:
+            reset_admin_password(store, reset_pw, "переменная окружения ADMIN_RESET_PASSWORD")
+            log.warning("Пароль администратора сброшен из ADMIN_RESET_PASSWORD. Удалите эту переменную после входа.")
 
     app = Flask(__name__, static_folder=os.path.join(base, "static"), static_url_path="/static")
     app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "64")) * 1024 * 1024
@@ -445,6 +449,25 @@ def create_app(db_path=None, start_scheduler=True):
     if start_scheduler:
         threading.Thread(target=scheduler, args=(store,), daemon=True).start()
     return app
+
+
+def reset_admin_password(store, password, how):
+    """Восстановление доступа: новый пароль первому активному администратору, снятие блокировки входа.
+    Вызывается внутри транзакции."""
+    if len(password) < 8:
+        raise SystemExit("Пароль — не короче 8 символов")
+    adm = next((u for u in store.S["users"] if is_admin(u) and u.get("active")), None)
+    if not adm:
+        adm = next((u for u in store.S["users"] if is_admin(u)), None) or store.S["users"][0]
+        adm["active"] = True
+        if "admin" not in adm["roles"]:
+            adm["roles"] = adm["roles"] + ["admin"]
+    adm["pw"] = A.make_pw(password)
+    store.save("users", adm)
+    store.conn.execute("DELETE FROM login_failures")
+    store.conn.execute("DELETE FROM sessions WHERE user_id=?", (adm["id"],))
+    store.audit(None, "Сброс пароля администратора", adm["name"], how, uname="Система")
+    return adm
 
 
 def scheduler(store):
