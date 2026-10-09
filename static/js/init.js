@@ -81,10 +81,7 @@ async function init(){
   if(STATUS && STATUS.ok && STATUS.user) await startSession();
   else showLogin();
 }
-$("#curDate").addEventListener("change", e=>{ CUR.date = e.target.value || todayISO(); inval(); render(); });
-$("#bell").addEventListener("click", ()=>{
-  const nf = notifications();
-  openModal({title:"Уведомления", width:720, body:()=> nf.length ? nf.map(n=>`<div class="alert ${n.lvl}" style="cursor:pointer" onclick="closeModal();go('${n.go}')">${esc(n.text)} <span class="tzref">${n.tr}</span></div>`).join("") : `<p class="muted">Нет уведомлений</p>`});
-});
-document.addEventListener("keydown", e=>{ if(e.key==="Escape" && MODAL) closeModal(); });
+$("#curDate").addEventListener("change", e=>setCurDate(e.target.value));
+$("#bell").addEventListener("click", e=>togglePop("bell", e));
+document.addEventListener("keydown", e=>{ if(e.key!=="Escape") return; if(CMD) closeCmd(); else if(MODAL) closeModal(); else if(POP) closePop(); });
 init();

@@ -3,11 +3,11 @@
    11. ОТЧЁТЫ (раздел 9)
    ============================================================ */
 const RF = {
-  rep37:{date:"", byOrg:false, byAcc:false, byCur:true, zero:false},
+  rep37:{date:"", byOrg:false, byAcc:false, byCur:false, zero:false},
   rep75:{date:"", wallets:[], sub:true},
   rep38:{from:"", to:"", step:"month", wallets:[], sub:true, cur:""},
   rep40:{date:""},
-  recon:{},
+  recon:{bad:false},
 };
 let DRILLS = [];
 const drillLink = (fn, html) => { DRILLS.push(fn); return `<a class="lnk" onclick="DRILLS[${DRILLS.length-1}]()">${html}</a>`; };
@@ -29,7 +29,7 @@ function openSrc(k, id){ if(k==="op") openOp(id); else if(k==="doc") openDoc(id)
 function showFacts(title, pred){
   const list = visFacts().filter(pred).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
   const byCur = {}; list.forEach(f=>byCur[f.cur]=(byCur[f.cur]||0)+f.sum);
-  openModal({title:esc(title), width:1180, body:()=>`
+  openModal({title:esc(title), drawer:true, width:1180, body:()=>`
     <div class="row" style="margin-bottom:8px">${Object.entries(byCur).map(([c,v])=>`<span class="tag">${fmtS(r2(v))} ${esc(curCode(c))}</span>`).join(" ")}
       <span class="muted">${list.length} записей</span><div style="flex:1"></div>
       <button class="btn sm" onclick="exportTable('factsTbl','Документы')">Выгрузить в Excel</button></div>
@@ -50,57 +50,62 @@ function emptyHint(){
 }
 
 /* ---------- ТР-37. Деньги по кошелькам на дату ---------- */
+let R37C = new Set();   // свёрнутые кошельки
+function tog37(id){ R37C.has(id) ? R37C.delete(id) : R37C.add(id); render(); }
 function viewRep37(){
   DRILLS = []; const F = RF.rep37; const date = repDate(F);
   const list = visFacts(); const bad = badAccs();
-  const keyOf = f => [F.byOrg?f.org:"", F.byAcc?f.acc:"", (F.byCur||F.byAcc)?f.cur:""].join("|");
-  const split = F.byOrg || F.byAcc || F.byCur;
+  const split = F.byOrg || F.byAcc;
+  const keyOf = f => [F.byOrg?f.org:"", F.byAcc?f.acc:"", f.cur].join("|");
   const agg = pred => { const byCur={}, nb={}, parts=new Map(); let neg=false, hasBad=false;
     list.forEach(f=>{ if(f.date>date || !pred(f)) return;
       byCur[f.cur]=(byCur[f.cur]||0)+f.sum; if(f.notBank) nb[f.cur]=(nb[f.cur]||0)+f.sum;
       if(bad.has(f.acc)) hasBad = true;
       if(split){ const k = keyOf(f); let p = parts.get(k); if(!p){ p={org:f.org, acc:f.acc, cur:f.cur, sum:0, nb:0}; parts.set(k,p);} p.sum+=f.sum; if(f.notBank) p.nb+=f.sum; } });
-    // отрицательный остаток на уровне кошелёк × счёт × валюта (ТР-24)
-    const cell = balances(date, list.filter(pred)); cell.forEach(r=>{ if(r.sum < -0.005) neg = true; });
+    balances(date, list.filter(pred)).forEach(r=>{ if(r.sum < -0.005) neg = true; });
     return {byCur, usd:usdOf(byCur,date), nb:usdOf(nb,date).usd, parts:[...parts.values()], neg, hasBad}; };
-  const rows = []; const V = visibleWallets();
-  visibleTree().forEach(w=>{
-    const S = descendants(w.id); const a = agg(f=>f.wallet && S.has(f.wallet) && V.has(f.wallet));
-    rows.push({w, a, pred:f=>f.wallet && S.has(f.wallet)});
-  });
+  const V = visibleWallets(); const T = visibleTree();
+  const kids = new Set(T.map(w=>w.parent).filter(Boolean));
+  const hiddenBy = w => { let p = T.find(x=>x.id===w.parent); while(p){ if(R37C.has(p.id)) return true; p = T.find(x=>x.id===p.parent); } return false; };
+  const rows = T.map(w=>{ const S = descendants(w.id); return {w, a:agg(f=>f.wallet && S.has(f.wallet) && V.has(f.wallet)), pred:f=>f.wallet && S.has(f.wallet), hidden:hiddenBy(w)}; });
   const noW = seesNoWallet(me()) ? agg(f=>!f.wallet) : null;
   const tot = agg(()=>true);
-  const curList = bc => Object.entries(bc).filter(([c,v])=>Math.abs(v)>=0.005).map(([c,v])=>`<span class="${v<0?"neg":""}">${fmt(r2(v))}&nbsp;${esc(curCode(c))}</span>`).join("<br>") || `<span class="muted">0</span>`;
-  const partRows = (a, pred, lvl) => a.parts.filter(p=>F.zero || Math.abs(p.sum)>=0.005).sort((x,y)=>(nm(org(x.org))+nm(acc(x.acc))).localeCompare(nm(org(y.org))+nm(acc(y.acc)),"ru")).map(p=>{
+  const curs = Object.keys(tot.byCur).filter(c=>Math.abs(tot.byCur[c])>=0.005 || F.zero)
+    .sort((a,b)=>(isUSD(b)-isUSD(a)) || curCode(a).localeCompare(curCode(b)));
+  const cell = v => Math.abs(v||0)<0.005 ? `<td class="num muted">—</td>` : `<td class="num ${v<0?"neg":""}">${fmt(r2(v))}</td>`;
+  const curCells = bc => curs.map(c=>cell(bc[c])).join("");
+  const partRows = (a, pred, lvl) => a.parts.filter(p=>F.zero || Math.abs(p.sum)>=0.005).sort((x,y)=>(nm(org(x.org))+nm(acc(x.acc))+curCode(x.cur)).localeCompare(nm(org(y.org))+nm(acc(y.acc))+curCode(y.cur),"ru")).map(p=>{
     const k = rateAt(p.cur,date); const usd = k ? r2(p.sum/k) : NaN;
-    const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?nm(acc(p.acc)):"", (F.byCur||F.byAcc)?curCode(p.cur):""].filter(Boolean).join(" · ");
+    const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?nm(acc(p.acc)):""].filter(Boolean).join(" · ");
     const isBad = F.byAcc && bad.has(p.acc);
-    return `<tr class="${isBad?"bad":""}"><td style="padding-left:${lvl*18+26}px" class="muted">${drillLink(()=>showFacts(label, f=>pred(f) && f.date<=date && (!F.byOrg||f.org===p.org) && (!F.byAcc||f.acc===p.acc) && (!(F.byCur||F.byAcc)||f.cur===p.cur)), esc(label))}
-      ${isBad?` <span class="tag off" title="ТР-42">расхождение со сверкой</span>`:""}</td>
-      <td class="num ${p.sum<0?"neg":""}">${fmt(r2(p.sum))} ${esc(curCode(p.cur))}</td><td class="num ${usd<0?"neg":""}">${fmt(usd)}</td><td class="num">${p.nb?fmt(r2(p.nb/(k||1))):""}</td></tr>`;
+    return `<tr class="part ${isBad?"bad":""}"><td style="padding-left:${lvl*20+44}px">${drillLink(()=>showFacts(label, f=>pred(f) && f.date<=date && (!F.byOrg||f.org===p.org) && (!F.byAcc||f.acc===p.acc) && f.cur===p.cur), esc(label))}
+      ${isBad?` <span class="tag off" title="ТР-42">расхождение</span>`:""}</td>
+      ${curs.map(c=>c===p.cur?cell(p.sum):`<td></td>`).join("")}<td class="num ${usd<0?"neg":""}">${fmt(usd)}</td><td class="num muted">${p.nb?fmt(r2(p.nb/(k||1))):""}</td></tr>`;
   }).join("");
-  const line = (label, a, pred, lvl, cls="") => `<tr class="${cls}">
-      <td style="padding-left:${lvl*18+9}px">${drillLink(()=>showFacts(label, f=>pred(f) && f.date<=date), esc(label))}
+  const line = (w, label, a, pred, lvl, cls="") => {
+    const has = w && kids.has(w.id); const closed = has && R37C.has(w.id);
+    return `<tr class="${cls}"><td style="padding-left:${lvl*20+14}px"><span class="tw">${has?`<button type="button" class="twist ${closed?"":"open"}" aria-expanded="${!closed}" aria-label="${closed?"Развернуть":"Свернуть"}" onclick="event.stopPropagation();tog37('${w.id}')"></button>`:`<span class="twist-sp"></span>`}
+        ${drillLink(()=>showFacts(label, f=>pred(f) && f.date<=date), esc(label))}</span>
         ${a.neg?` <span class="tag off">есть минус</span>`:""}${a.hasBad?` <span class="tag off" title="ТР-42">счёт с расхождением</span>`:""}${a.usd.miss.length?` <span class="tag warn">нет курса ${esc(a.usd.miss.join(", "))}</span>`:""}</td>
-      <td class="num">${curList(a.byCur)}</td><td class="num ${a.usd.usd<0?"neg":""}">${fmt(a.usd.usd)}</td><td class="num">${a.nb?fmt(a.nb):""}</td></tr>` + (split ? partRows(a,pred,lvl) : "");
-  return `${repHeader("Деньги по кошелькам на дату","ТР-37",`Остаток каждого кошелька по иерархии: родитель включает подчинённые. Остаток в USD = остаток в валюте ÷ курс ERP на дату отчёта (ТР-58). Нажмите строку, чтобы перейти к документам.`)}
+      ${curCells(a.byCur)}<td class="num usd ${a.usd.usd<0?"neg":""}">${fmt(a.usd.usd)}</td><td class="num muted">${a.nb?fmt(a.nb):""}</td></tr>` + (split && !closed ? partRows(a,pred,lvl) : ""); };
+  const allIds = [...kids];
+  return `${repHeader("Деньги по кошелькам на дату","ТР-37",`Остаток каждого кошелька по иерархии: родитель включает подчинённые. Остаток в USD = остаток в валюте ÷ курс ERP на дату отчёта (ТР-58). Нажмите на название, чтобы увидеть документы.`)}
   ${emptyHint()}
-  <div class="panel"><div class="body filters">
+  <div class="toolbar">
     <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep37.date=this.value;render()"></label>
-    <div class="fld"><span>Разрезы</span><div class="row">
-      <label class="chk"><input type="checkbox" ${F.byOrg?"checked":""} onchange="RF.rep37.byOrg=this.checked;render()"> юрлицо</label>
-      <label class="chk"><input type="checkbox" ${F.byAcc?"checked":""} onchange="RF.rep37.byAcc=this.checked;render()"> счёт или касса</label>
-      <label class="chk"><input type="checkbox" ${F.byCur?"checked":""} onchange="RF.rep37.byCur=this.checked;render()"> валюта</label>
-      <label class="chk"><input type="checkbox" ${F.zero?"checked":""} onchange="RF.rep37.zero=this.checked;render()"> нулевые строки</label></div></div>
-    <div style="flex:1"></div>
+    <div class="fld"><span>Разбить по</span><div class="chips">
+      ${chip(F.byOrg,"RF.rep37.byOrg=!RF.rep37.byOrg;render()","юрлицам")}${chip(F.byAcc,"RF.rep37.byAcc=!RF.rep37.byAcc;render()","счетам и кассам")}</div></div>
+    <div class="fld"><span>Показать</span><div class="chips">${chip(F.zero,"RF.rep37.zero=!RF.rep37.zero;render()","нулевые")}</div></div>
+    <div class="grow"></div>
+    ${allIds.length?`<div class="row tb-actions"><button type="button" class="btn ghost" onclick="R37C=new Set();render()">Развернуть всё</button><button type="button" class="btn ghost" onclick="R37C=new Set(${esc(JSON.stringify(allIds))});render()">Свернуть</button></div>`:""}
     ${exportBtn("t37","Деньги по кошелькам")}
-  </div></div>
-  <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t37">
-    <thead><tr><th>Кошелёк</th><th class="num">Остаток в валюте</th><th class="num">Остаток, USD</th><th class="num" title="ТР-09">в т.ч. не исполнено банком, USD</th></tr></thead>
+  </div>
+  <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t37" class="ledger-t">
+    <thead><tr><th>Кошелёк</th>${curs.map(c=>`<th class="num">${esc(curCode(c))}</th>`).join("")}<th class="num">Итого, USD</th><th class="num" title="ТР-09">Не исполнено банком, USD</th></tr></thead>
     <tbody>
-      ${rows.map(r=>line(r.w.name, r.a, r.pred, r.w._lvl, r.w._lvl?"":"grp")).join("") || `<tr><td colspan="4" class="muted">Нет доступных кошельков</td></tr>`}
-      ${noW ? line("Без кошелька", noW, f=>!f.wallet, 0, "grp") : ""}
-      <tr class="tot"><td>Итого</td><td class="num">${curList(tot.byCur)}</td><td class="num ${tot.usd.usd<0?"neg":""}">${fmt(tot.usd.usd)}</td><td class="num">${tot.nb?fmt(tot.nb):""}</td></tr>
+      ${rows.filter(r=>!r.hidden).map(r=>line(r.w, r.w.name, r.a, r.pred, r.w._lvl, r.w._lvl?"":"grp")).join("") || `<tr><td colspan="${curs.length+3}" class="muted">Нет доступных кошельков</td></tr>`}
+      ${noW && Object.values(noW.byCur).some(v=>Math.abs(v)>=0.005) ? line(null, "Без кошелька", noW, f=>!f.wallet, 0, "grp nowallet") : ""}
+      <tr class="tot"><td>Итого</td>${curCells(tot.byCur)}<td class="num ${tot.usd.usd<0?"neg":""}">${fmt(tot.usd.usd)}</td><td class="num">${tot.nb?fmt(tot.nb):""}</td></tr>
     </tbody></table></div></div></div>`;
 }
 
@@ -121,7 +126,7 @@ function viewRep75(){
     let sub = 0;
     const html = rs.map(r=>{ const k = rateAt(r.cur,date); const usd = k?r2(r.sum/k):NaN; if(k) sub += r.sum/k; else missing.add(curCode(r.cur));
       const a = acc(r.acc);
-      return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:26px">${drillLink(()=>showFacts(nm(a), f=>f.wallet&&sel.has(f.wallet)&&f.acc===r.acc&&f.cur===r.cur&&f.date<=date), esc(nm(a)))}
+      return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:32px">${drillLink(()=>showFacts(nm(a), f=>f.wallet&&sel.has(f.wallet)&&f.acc===r.acc&&f.cur===r.cur&&f.date<=date), esc(nm(a)))}
         <span class="muted">${a?esc(a.kind==="Касса"?"касса":(a.accType||"счёт").toLowerCase()):""}</span>${bad.has(r.acc)?` <span class="tag off">расхождение</span>`:""}</td>
         <td>${esc(curCode(r.cur))}</td><td class="num ${r.sum<0?"neg":""}">${fmt(r2(r.sum))}</td><td class="num ${usd<0?"neg":""}">${fmt(usd)}</td>
         <td class="muted" style="font-size:11px">${Object.entries(r.byW).filter(([w,v])=>Math.abs(v)>=0.005).map(([w,v])=>`${esc(nm(wal(w)))}: ${fmt(r2(v))}`).join("; ")}</td></tr>`; }).join("");
@@ -130,21 +135,17 @@ function viewRep75(){
   }).join("");
   return `${repHeader("Где лежат деньги","ТР-75",`Выберите один или несколько кошельков — отчёт покажет, в каких компаниях, на каких счетах и кассах и в какой валюте лежат их деньги.`)}
   ${emptyHint()}
-  <div class="panel"><div class="body filters">
-    <div class="fld"><span>Кошельки</span>${walletChecklist(F.wallets,"toggle75")}</div>
-    <div class="stack">
-      <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep75.date=this.value;render()"></label>
-      <label class="chk"><input type="checkbox" ${F.sub?"checked":""} onchange="RF.rep75.sub=this.checked;render()"> включая подчинённые кошельки</label>
-      <div class="row"><button class="btn sm" onclick="RF.rep75.wallets=[...visibleWallets()].filter(id=>!wal(id).parent||!visibleWallets().has(wal(id).parent));render()">Выбрать все</button>
-      <button class="btn sm" onclick="RF.rep75.wallets=[];render()">Снять</button></div>
-    </div>
-    <div style="flex:1"></div>
+  <div class="toolbar">
+    ${walletPicker("w75", F.wallets, "toggle75", {all:"Не выбраны", onAll:"RF.rep75.wallets=[...visibleWallets()].filter(id=>!wal(id).parent||!visibleWallets().has(wal(id).parent));render()", onClear:"RF.rep75.wallets=[];render()"})}
+    <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep75.date=this.value;render()"></label>
+    <div class="fld"><span>Подчинённые</span><div class="chips">${chip(F.sub,"RF.rep75.sub=!RF.rep75.sub;render()","включать")}</div></div>
+    <div class="grow"></div>
     ${exportBtn("t75","Где лежат деньги")}
-  </div></div>
+  </div>
   ${missing.size?`<div class="alert warn">Нет курса на ${fmtD(date)} для: ${esc([...missing].join(", "))}. Загрузите курсы из 1С.</div>`:""}
   <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t75">
     <thead><tr><th>Компания / счёт или касса</th><th>Валюта</th><th class="num">Остаток в валюте</th><th class="num">Остаток, USD</th><th>В т.ч. по кошелькам</th></tr></thead>
-    <tbody>${F.wallets.length ? (body || `<tr><td colspan="5" class="muted">У выбранных кошельков нет остатков на ${fmtD(date)}</td></tr>`) : `<tr><td colspan="5" class="muted">Выберите кошельки слева</td></tr>`}
+    <tbody>${F.wallets.length ? (body || `<tr><td colspan="5" class="muted">У выбранных кошельков нет остатков на ${fmtD(date)}</td></tr>`) : `<tr><td colspan="5" class="empty-cell">Выберите один или несколько кошельков в поле «Кошельки» выше.<br><button type="button" class="btn sm" style="margin-top:10px" onclick="RF.rep75.wallets=[...visibleWallets()].filter(id=>!wal(id).parent||!visibleWallets().has(wal(id).parent));render()">Показать все кошельки</button></td></tr>`}
     ${F.wallets.length && body ? `<tr class="tot"><td colspan="3">Итого, USD</td><td class="num ${grand<0?"neg":""}">${fmt(r2(grand))}</td><td></td></tr>`:""}</tbody>
   </table></div></div></div>`;
 }
@@ -189,7 +190,7 @@ function viewRep38(){
   const sumBy = (b, pred, m) => r2(list.filter(f=>inB(f,b) && pred(f)).reduce((s,f)=>s+val(f,m),0));
   const total = (pred, m) => r2(list.filter(f=>f.date>=from && f.date<=to && pred(f)).reduce((s,f)=>s+val(f,m),0));
   const LSET = new Set(list);
-  const cellRow = (label, pred, {cls="", pad=0}={}) => `<tr class="${cls}"><td style="padding-left:${9+pad}px">${esc(label)}</td>${cols.map(c=>modes.map(m=>{ const v = sumBy(c.b,pred,m);
+  const cellRow = (label, pred, {cls="", pad=0}={}) => `<tr class="${cls}"><td style="padding-left:${14+pad}px">${esc(label)}</td>${cols.map(c=>modes.map(m=>{ const v = sumBy(c.b,pred,m);
       return `<td class="num ${v<0?"neg":v>0?"pos":""}">${Math.abs(v)<0.005?`<span class="muted">·</span>`:drillLink(()=>showFacts(`${label} · ${c.b.label}`, f=>inB(f,c.b)&&pred(f)&&LSET.has(f)), fmtS(v))}</td>`; }).join("")).join("")}
       ${modes.map(m=>{ const t = total(pred,m); return `<td class="num ${t<0?"neg":""}"><b>${fmtS(t)}</b></td>`; }).join("")}</tr>`;
   const cfName = id => id ? refName(DB.cfTypes,id) : "Тип расхода CF не указан";
@@ -224,18 +225,18 @@ function viewRep38(){
   const unit = inCur ? curCode(F.cur) : "USD";
   return `${repHeader("Фактический ДДС с остатками","ТР-38",`Поступления со знаком «+», расходы со знаком «−». Обороты в USD — по курсам ERP на даты операций, остатки — по курсу на конец шага; разница показана строкой «Курсовая разница» (ТР-58). При выборе валюты отчёт показывает суммы в валюте счёта и в USD (ТР-33).`)}
   ${emptyHint()}
-  <div class="panel"><div class="body filters">
+  <div class="toolbar">
     <label class="fld"><span>Период с</span><input type="date" value="${from}" onchange="RF.rep38.from=this.value;render()"></label>
     <label class="fld"><span>по</span><input type="date" value="${to}" onchange="RF.rep38.to=this.value;render()"></label>
-    <label class="fld"><span>Шаг</span><select onchange="RF.rep38.step=this.value;render()">${[["day","День"],["week","Неделя"],["month","Месяц"]].map(([k,t])=>`<option value="${k}" ${F.step===k?"selected":""}>${t}</option>`).join("")}</select></label>
-    <label class="fld"><span>Валюта</span><select onchange="RF.rep38.cur=this.value;render()"><option value="">Все валюты — в USD</option>${curs.map(c=>`<option value="${c}" ${F.cur===c?"selected":""}>${esc(curCode(c))} — в валюте и в USD</option>`).join("")}</select></label>
-    <div class="fld"><span>Кошельки (пусто — все доступные)</span>${walletChecklist(F.wallets,"toggle38")}
-      <label class="chk"><input type="checkbox" ${F.sub?"checked":""} onchange="RF.rep38.sub=this.checked;render()"> включая подчинённые</label></div>
-    <div style="flex:1"></div>
+    <div class="fld"><span>Шаг</span><div class="seg">${[["day","День"],["week","Неделя"],["month","Месяц"]].map(([k,t])=>`<button type="button" class="${F.step===k?"on":""}" aria-pressed="${F.step===k}" onclick="RF.rep38.step='${k}';render()">${t}</button>`).join("")}</div></div>
+    <label class="fld"><span>Валюта</span><select onchange="RF.rep38.cur=this.value;render()"><option value="">Все — в USD</option>${curs.map(c=>`<option value="${c}" ${F.cur===c?"selected":""}>${esc(curCode(c))} — в валюте и USD</option>`).join("")}</select></label>
+    ${walletPicker("w38", F.wallets, "toggle38", {onClear:"RF.rep38.wallets=[];render()"})}
+    <div class="fld"><span>Подчинённые</span><div class="chips">${chip(F.sub,"RF.rep38.sub=!RF.rep38.sub;render()","включать")}</div></div>
+    <div class="grow"></div>
     ${exportBtn("t38","ДДС")}
-  </div></div>
+  </div>
   ${B.length>=400?`<div class="alert warn">Слишком много колонок — показаны первые 400. Увеличьте шаг.</div>`:""}
-  <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none;overflow-x:auto"><table id="t38">
+  <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none;overflow-x:auto"><table id="t38" class="sticky-first">
     <thead>${inCur?`<tr><th rowspan="2">Статья</th>${cols.map(c=>`<th class="num" colspan="2" style="text-align:center">${esc(c.b.label)}</th>`).join("")}<th class="num" colspan="2" style="text-align:center">Итого</th></tr>
       <tr>${[...cols,{}].map(()=>`<th class="num">${esc(unit)}</th><th class="num">USD</th>`).join("")}</tr>`
       : `<tr><th>Статья · USD</th>${cols.map(c=>`<th class="num">${esc(c.b.label)}</th>`).join("")}<th class="num">Итого</th></tr>`}</thead>
@@ -263,12 +264,12 @@ function viewRep40(){
   DRILLS = []; const F = RF.rep40; const date = repDate(F); const rows = loanRows(date);
   const tot = r2(rows.reduce((s,r)=>s+r.debt,0));
   return `${repHeader("Внутренние займы","ТР-40",`Задолженность между кошельками в USD на дату — по каждой паре кошельков и договору. Займы учитываются в USD по курсу каждой стороны, зафиксированному в операции (ТР-28). Проценты не начисляются (ТР-29).`)}
-  <div class="panel"><div class="body filters">
+  <div class="toolbar">
     <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep40.date=this.value;render()"></label>
-    <div style="flex:1"></div>
+    <div class="grow"></div>
     ${canEnter(me())?`<button class="btn" onclick="openContract(null)">Новый договор займа</button>`:""}
     ${exportBtn("t40","Внутренние займы")}
-  </div></div>
+  </div>
   <div class="panel"><div class="body flush"><table id="t40">
     <thead><tr><th>Займодавец</th><th>Заёмщик</th><th>Договор</th><th class="num">Выдано, USD</th><th class="num">Погашено, USD</th><th class="num">Долг, USD</th></tr></thead>
     <tbody>${rows.map(r=>`<tr><td>${esc(nm(wal(r.c.lender)))}</td><td>${esc(nm(wal(r.c.borrower)))}</td>
@@ -278,7 +279,7 @@ function viewRep40(){
       ${rows.length?`<tr class="tot"><td colspan="5">Итого долг</td><td class="num">${fmt(tot)}</td></tr>`:""}</tbody></table></div></div>`;
 }
 function showOpsList(title, ops){
-  openModal({title:esc(title), width:1000, body:()=>`<table><thead><tr><th>Дата</th><th>Номер</th><th>Вид</th><th>Отправитель → получатель</th><th class="num">Сумма</th><th class="num">USD</th></tr></thead>
+  openModal({title:esc(title), drawer:true, width:1000, body:()=>`<table><thead><tr><th>Дата</th><th>Номер</th><th>Вид</th><th>Отправитель → получатель</th><th class="num">Сумма</th><th class="num">USD</th></tr></thead>
     <tbody>${ops.map(o=>{ const L = opLegs(o); return `<tr class="clickable" onclick="openOp('${o.id}')"><td>${fmtD(o.date)}</td><td><a class="lnk">${esc(o.no)}</a></td><td>${esc(OP_KINDS[o.kind].name)}</td>
       <td>${esc(nm(wal(o.from)))} → ${esc(nm(wal(o.to)))}</td><td class="num">${L.map(l=>`${fmt(l.sum)} ${esc(curCode(l.cur))}`).join("<br>")}</td><td class="num">${L.map(l=>fmt(l.usd)).join("<br>")}</td></tr>`; }).join("") || `<tr><td colspan="6" class="muted">Нет операций</td></tr>`}</tbody></table>`});
 }
@@ -290,12 +291,19 @@ function viewRecon(){
   const rows = recon().filter(r => all || facts().some(f=>f.acc===r.acc && f.wallet && V.has(f.wallet)))
     .sort((a,b)=>(Math.abs(b.diff)>=0.005)-(Math.abs(a.diff)>=0.005) || nm(a.a).localeCompare(nm(b.a),"ru"));
   const badN = rows.filter(r=>Math.abs(r.diff)>=0.005).length;
+  const okN = rows.length - badN; const badSum = {}; rows.forEach(r=>{ if(Math.abs(r.diff)>=0.005) badSum[r.cur]=(badSum[r.cur]||0)+r.diff; });
+  const shownRows = RF.recon.bad ? rows.filter(r=>Math.abs(r.diff)>=0.005) : rows;
   return `${repHeader("Сверка с 1С","ТР-41…43",`Главный контроль: сумма всех кошельков на счёте или в кассе равна остатку в 1С. Остатки 1С загружаются файлом (ТР-65), сверка — на дату загруженных остатков. Работа не блокируется, но день без расхождений закрывается для правки (ТР-55).`)}
-  <div class="panel"><header><h2>${rows.length} счетов и касс</h2>${badN?`<span class="tag off">с расхождением: ${badN}</span>`:rows.length?`<span class="tag ok">расхождений нет</span>`:""}
+  ${rows.length?`<div class="summary">
+    <div class="sum-item"><b>${rows.length}</b><span>счетов и касс сверено</span></div>
+    <div class="sum-item"><b class="pos">${okN}</b><span>сходятся с 1С</span></div>
+    <div class="sum-item ${badN?"alarm":""}"><b class="${badN?"neg":""}">${badN}</b><span>с расхождением${badN?": "+Object.entries(badSum).map(([c,v])=>`${fmtS(r2(v))} ${esc(curCode(c))}`).join(", "):""}</span></div>
+  </div>`:""}
+  <div class="panel"><header><div class="chips">${chip(!RF.recon.bad,"RF.recon.bad=false;render()",`Все · ${rows.length}`)}${chip(RF.recon.bad,"RF.recon.bad=true;render()",`С расхождением · ${badN}`)}</div>
     <div style="flex:1"></div>${isAdmin(u)?`<button class="btn" onclick="IMP.tab='bal';go('import')">Загрузить остатки 1С</button>`:""}${exportBtn("tRec","Сверка")}</header>
   <div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="tRec">
     <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th>Дата сверки</th><th class="num">Остаток в 1С</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Расхождение с</th><th></th></tr></thead>
-    <tbody>${rows.map(r=>{ const bad = Math.abs(r.diff)>=0.005; const from = r.since || r.date;
+    <tbody>${shownRows.map(r=>{ const bad = Math.abs(r.diff)>=0.005; const from = r.since || r.date;
       const lastOk = r.hist.filter(h=>h.date<from && Math.abs(h.diff)<0.005).map(h=>h.date).pop();
       return `<tr class="${bad?"bad":""}"><td>${esc(nm(org(r.org)))}</td><td>${esc(nm(r.a))}</td><td>${esc(curCode(r.cur))}</td><td>${fmtD(r.date)}</td>
       <td class="num">${fmt(r.c1)}</td><td class="num">${fmt(r.w)}</td><td class="num ${bad?"neg":""}"><b>${bad?fmtS(r.diff):"0,00"}</b></td>
@@ -305,7 +313,7 @@ function viewRecon(){
   </table></div></div></div>`;
 }
 function showReconHist(r){
-  openModal({title:`История сверки · ${esc(nm(r.a))}`, width:760, body:()=>`<table><thead><tr><th>Дата</th><th class="num">1С</th><th class="num">Кошельки</th><th class="num">Расхождение</th></tr></thead>
+  openModal({title:`История сверки · ${esc(nm(r.a))}`, drawer:true, width:760, body:()=>`<table><thead><tr><th>Дата</th><th class="num">1С</th><th class="num">Кошельки</th><th class="num">Расхождение</th></tr></thead>
     <tbody>${r.hist.slice().reverse().map(h=>`<tr class="${Math.abs(h.diff)>=0.005?"bad":""}"><td>${fmtD(h.date)}</td><td class="num">${fmt(h.c1)}</td><td class="num">${fmt(h.w)}</td><td class="num">${fmtS(h.diff)}</td></tr>`).join("")}</tbody></table>`});
 }
 
@@ -327,25 +335,57 @@ function viewDash(){
     [DB.bal1c.length, "Загрузить остатки счетов и касс 1С для сверки", "import", "ТР-65"],
   ];
   const done = steps.filter(s=>s[0]).length;
+  // валюты: сумма в валюте и её эквивалент в USD
+  const curRows = Object.entries(bc).filter(([c,v])=>Math.abs(v)>=0.005).map(([c,v])=>{ const k = rateAt(c,CUR.date); return {c, v:r2(v), usd:k?r2(v/k):NaN}; })
+    .sort((a,b)=>(b.usd||0)-(a.usd||0));
+  // кошельки верхнего уровня с долей в общем остатке
+  const V = visibleWallets(u);
+  const top = visibleTree().filter(w=>!w._lvl).map(w=>{ const D = descendants(w.id); const b = {}; list.forEach(f=>{ if(f.wallet && D.has(f.wallet) && V.has(f.wallet) && f.date<=CUR.date) b[f.cur]=(b[f.cur]||0)+f.sum; }); return {w, usd:usdOf(b,CUR.date).usd}; });
+  const subs = visibleTree().filter(w=>w._lvl===1).map(w=>{ const D = descendants(w.id); const b = {}; list.forEach(f=>{ if(f.wallet && D.has(f.wallet) && V.has(f.wallet) && f.date<=CUR.date) b[f.cur]=(b[f.cur]||0)+f.sum; }); return {w, usd:usdOf(b,CUR.date).usd}; });
+  // если наверху один головной кошелёк — показываем его подчинённые
+  const wl = (top.length===1 && subs.length ? subs : top).sort((a,b)=>b.usd-a.usd);
+  const maxW = Math.max(1, ...wl.map(x=>Math.abs(x.usd)));
+  const noW = list.filter(f=>!f.wallet && f.date<=CUR.date); const noWb = {}; noW.forEach(f=>noWb[f.cur]=(noWb[f.cur]||0)+f.sum); const noWusd = usdOf(noWb,CUR.date).usd;
+  const docsN = DB.docs.filter(d=>docCounts(d)).length, opsN = DB.ops.filter(o=>opCounts(o)).length, badN = badAccs().size;
+  const actions = canEnter(u) ? `<div class="quick">
+      <button type="button" class="btn primary" onclick="newDoc('ПБДС')">Поступление на счёт</button>
+      <button type="button" class="btn" onclick="newDoc('ПКО')">Поступление в кассу</button>
+      <button type="button" class="btn" onclick="newDoc('ПЕР')">Конвертация или переброска</button>
+      <button type="button" class="btn" onclick="newOp()">Внутренняя операция</button></div>` : "";
   return `<h1>Сводка</h1>
   <p class="lede">Калькулятор фактических остатков денег группы по кошелькам. Платежи ведутся в 1С ERP; здесь — кошельки, правила, входящие остатки, внутренние операции и, до запуска шлюза, ручной ввод поступлений и перебросок. Вы вошли как <b>${esc(u.name)}</b> (${u.roles.map(r=>`<span>${esc(ROLES[r])}</span>`).join(", ")}) — все экраны показывают только доступные вам кошельки.</p>
-  <div class="panel"><div class="stats">
-    <div class="stat"><b class="${tot.usd<0?"neg":""}">${fmt(tot.usd)}</b><span>Остаток доступных кошельков, USD на ${fmtD(CUR.date)}</span></div>
-    <div class="stat"><b>${visibleWallets(u).size}</b><span>доступных кошельков</span></div>
-    <div class="stat"><b>${DB.docs.filter(d=>docCounts(d)).length}</b><span>документов в расчёте</span></div>
-    <div class="stat"><b>${DB.ops.filter(o=>opCounts(o)).length}</b><span>внутренних операций</span></div>
-    <div class="stat"><b class="${badAccs().size?"neg":""}">${badAccs().size}</b><span>счетов с расхождением</span></div>
-  </div></div>
+  ${actions}
+  <section class="hero">
+    <div class="hero-main">
+      <span class="hero-label">Остаток доступных кошельков на ${fmtD(CUR.date)}</span>
+      <b class="hero-sum ${tot.usd<0?"neg":""}">${fmt(tot.usd)}<small>USD</small></b>
+      <div class="hero-links"><a class="lnk" onclick="go('rep37')">Открыть по кошелькам</a><a class="lnk" onclick="go('rep75')">Где лежат деньги</a></div>
+    </div>
+    <table class="hero-cur"><thead><tr><th>Валюта</th><th class="num">Остаток</th><th class="num">В USD</th></tr></thead>
+      <tbody>${curRows.map(r=>`<tr><td>${esc(curCode(r.c))}</td><td class="num ${r.v<0?"neg":""}">${fmt(r.v)}</td><td class="num">${fmt(r.usd)}</td></tr>`).join("") || `<tr><td colspan="3">Остатков нет</td></tr>`}</tbody></table>
+  </section>
   ${tot.miss.length?`<div class="alert warn">Нет курса на ${fmtD(CUR.date)} для: ${esc(tot.miss.join(", "))} — эти суммы не вошли в USD.</div>`:""}
-  <div class="split">
-    <div class="panel"><header><h2>Уведомления</h2><span class="hint">для текущего пользователя</span></header>
-      <div class="body">${nf.length ? nf.map(n=>`<div class="alert ${n.lvl}" style="cursor:pointer" onclick="go('${n.go}')">${esc(n.text)} <span class="tzref">${n.tr}</span></div>`).join("") : `<p class="muted" style="margin:0">Нет уведомлений.</p>`}</div></div>
-    ${A ? `<div class="panel"><header><h2>Первичная настройка</h2><span class="hint">${done} из ${steps.length}</span></header>
-      <div class="body"><ol class="steps">${steps.map(s=>`<li class="${s[0]?"done":""}"><span class="grow">${esc(s[1])} <span class="tzref">${s[3]}</span></span><button class="btn sm" onclick="go('${s[2]}')">Открыть</button></li>`).join("")}</ol></div></div>`
-    : `<div class="panel"><header><h2>Что мне доступно</h2></header><div class="body stack">
-        <span>Кошельки: ${[...visibleWallets(u)].map(id=>esc(nm(wal(id)))).join(", ") || `<span class="muted">не назначены — обратитесь к администратору</span>`}</span>
-        <span>${canEnter(u)?"Можно вводить внутренние операции и ручные документы по своим кошелькам в открытом периоде.":"Только просмотр."}</span>
-        <div class="row"><button class="btn primary" onclick="go('rep37')">Деньги по кошелькам</button><button class="btn" onclick="go('rep75')">Где лежат деньги</button>
-        ${canEnter(u)?`<button class="btn" onclick="newOp()">Новая внутренняя операция</button>`:""}</div></div></div>`}
-  </div>`;
+  <div class="dash-grid">
+    <div class="panel"><header><h2>Требует внимания</h2>${nf.length?`<span class="count">${nf.length}</span>`:""}</header>
+      <div class="body flush">${nf.length ? `<ul class="todo">${nf.map(n=>`<li class="${n.lvl}"><span class="todo-mark"></span><span class="todo-text">${esc(n.text)} <span class="tzref">${n.tr}</span></span><button type="button" class="btn sm" onclick="go('${n.go}')">Перейти</button></li>`).join("")}</ul>`
+        : `<p class="empty">Всё в порядке: расхождений и неразнесённых строк нет.</p>`}</div></div>
+    <div class="panel"><header><h2>Кошельки</h2><span class="hint">USD на ${fmtD(CUR.date)}</span><div style="flex:1"></div><a class="lnk" onclick="go('rep37')">Все</a></header>
+      <div class="body flush"><ul class="wlist">${wl.map(x=>`<li onclick="RF.rep75.wallets=['${x.w.id}'];go('rep75')" title="Где лежат деньги этого кошелька">
+          <span class="wl-name">${esc(x.w.name)}</span><span class="num ${x.usd<0?"neg":""}">${fmt(x.usd)}</span>
+          <span class="wl-bar"><i style="width:${Math.max(0,Math.round(Math.abs(x.usd)/maxW*100))}%" class="${x.usd<0?"n":""}"></i></span>
+          <span class="wl-pct muted">${tot.usd?Math.round(x.usd/tot.usd*100):0}%</span></li>`).join("") || `<li class="empty">Кошельков нет</li>`}
+        ${Math.abs(noWusd)>=0.005?`<li class="nowallet" onclick="go('nowallet')"><span class="wl-name">Без кошелька</span><span class="num ${noWusd<0?"neg":""}">${fmt(noWusd)}</span><span class="wl-bar"></span><span class="wl-pct"></span></li>`:""}</ul></div></div>
+  </div>
+  <div class="facts">
+    <a class="fact" onclick="go('docs')"><b>${docsN}</b><span>документов в расчёте</span></a>
+    <a class="fact" onclick="go('ops')"><b>${opsN}</b><span>внутренних операций</span></a>
+    <a class="fact" onclick="go('recon')"><b class="${badN?"neg":""}">${badN}</b><span>счетов с расхождением</span></a>
+    <div class="fact"><b>${S.closedTo?fmtD(S.closedTo):"—"}</b><span>период закрыт по</span></div>
+  </div>
+  ${A && done<steps.length ? `<div class="panel"><header><h2>Первичная настройка</h2><span class="hint">${done} из ${steps.length}</span>
+      <div class="progress" aria-hidden="true"><i style="width:${Math.round(done/steps.length*100)}%"></i></div></header>
+    <div class="body"><ol class="steps">${steps.map(s=>`<li class="${s[0]?"done":""}"><span class="grow">${esc(s[1])} <span class="tzref">${s[3]}</span></span>${s[0]?"":`<button class="btn sm" onclick="go('${s[2]}')">Открыть</button>`}</li>`).join("")}</ol></div></div>` : ""}
+  ${!A ? `<div class="panel"><header><h2>Мои кошельки</h2></header><div class="body stack">
+      <span>${[...visibleWallets(u)].map(id=>esc(nm(wal(id)))).join(", ") || `<span class="muted">не назначены — обратитесь к администратору</span>`}</span>
+      <span class="muted">${canEnter(u)?"Можно вводить внутренние операции и ручные документы по своим кошелькам в открытом периоде.":"Только просмотр."}</span></div></div>` : ""}`;
 }

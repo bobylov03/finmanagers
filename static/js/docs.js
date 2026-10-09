@@ -42,37 +42,54 @@ function exportDocs(){
   const fname = `Документы ${CUR.date}.xlsx`; downloadBlob(xlsxBlob([{name:"Документы", rows}]), fname);
   audit("Выгрузка в Excel", "Документы", `файл ${fname}; строк ${list.length}`);
 }
+let DF_MORE = false;
+function dfCount(){ return ["type","org","from","to"].filter(k=>DF[k]).length; }
+function createMenu(){
+  const id = "v:create"; const open = POP===id;
+  return `<div class="popwrap"><button type="button" class="btn primary" onclick="togglePop('${id}',event)" aria-expanded="${open}">Создать <span class="caret light"></span></button>
+    ${open?`<div class="pop pop-right" role="menu">
+      <button type="button" class="pop-item" onclick="POP=null;newDoc('ПБДС')"><b>Поступление на счёт</b><span class="muted">ПБДС — оплата, возврат, кредит</span></button>
+      <button type="button" class="pop-item" onclick="POP=null;newDoc('ПКО')"><b>Поступление в кассу</b><span class="muted">ПКО — наличные</span></button>
+      <button type="button" class="pop-item" onclick="POP=null;newDoc('ПЕР')"><b>Конвертация или переброска</b><span class="muted">Между счетами группы, одной формой</span></button>
+      <button type="button" class="pop-item" onclick="POP=null;newOp()"><b>Внутренняя операция</b><span class="muted">Займ, финансирование, дивиденды</span></button></div>`:""}</div>`;
+}
+function seg(cur, opts, setter){ return `<div class="seg">${opts.map(([v,t])=>`<button type="button" class="${cur===v?"on":""}" aria-pressed="${cur===v}" onclick="${setter}='${v}';render()">${t}</button>`).join("")}</div>`; }
 function viewDocs(){
   const u = me(); const list = docsFiltered();
   const shown = list.slice(0,DOCLIM);
   const can = canEnter(u);
-  const sw = DB.settings.switchDate;
+  const sw = DB.settings.switchDate; const nf = dfCount();
   return `<h1>Документы</h1>
   <p class="lede">Расходы (СБДС, РКО) приходят из 1С — файлом, позже через шлюз; здесь у них можно только назначить кошелёк. Поступления, конвертации и переброски пока вводятся вручную (ТР-68).${sw?` С ${fmtD(sw)} ручной ввод отключён — данные приходят из 1С (ТР-72).`:""}</p>
-  <div class="panel"><div class="body filters">
-    <label class="fld"><span>Источник</span><select onchange="DF.src=this.value;render()"><option value="">Все</option><option value="file" ${DF.src==="file"?"selected":""}>Из файла 1С</option><option value="manual" ${DF.src==="manual"?"selected":""}>Ручной ввод</option></select></label>
-    <label class="fld"><span>Тип</span><select onchange="DF.type=this.value;render()"><option value="">Все</option>${Object.entries(DOC_TYPES).map(([k,t])=>`<option value="${k}" ${DF.type===k?"selected":""}>${k} — ${esc(t.name)}</option>`).join("")}</select></label>
-    <label class="fld"><span>Организация</span><select onchange="DF.org=this.value;render()">${opts(DB.orgs,DF.org,{empty:"Все"})}</select></label>
-    <label class="fld"><span>С</span><input type="date" value="${DF.from}" onchange="DF.from=this.value;render()"></label>
-    <label class="fld"><span>По</span><input type="date" value="${DF.to}" onchange="DF.to=this.value;render()"></label>
-    <label class="fld"><span>Состояние</span><select onchange="DF.state=this.value;render()"><option value="">Все</option><option value="in" ${DF.state==="in"?"selected":""}>В расчёте</option><option value="out" ${DF.state==="out"?"selected":""}>Вне расчёта</option></select></label>
-    <label class="fld"><span>Поиск</span><input type="text" value="${esc(DF.q)}" placeholder="номер, GUID, контрагент" onchange="DF.q=this.value;render()"></label>
-  </div></div>
-  <div class="panel"><header><h2>${list.length} документов${list.length>DOCLIM?` (показаны первые ${DOCLIM})`:""}</h2><div style="flex:1"></div>
-    ${can?`<button class="btn primary" onclick="newDoc('ПБДС')">Поступление на счёт</button><button class="btn" onclick="newDoc('ПКО')">Поступление в кассу</button><button class="btn" onclick="newDoc('ПЕР')">Конвертация / переброска</button>`:""}
-    <button class="btn" onclick="exportDocs()">Выгрузить в Excel (все ${list.length})</button></header>
-  <div class="body flush"><div class="tbl-wrap"><table id="tDocs">
-    <thead><tr><th>Дата</th><th>Тип</th><th>Номер</th><th>Хоз. операция</th><th>Организация</th><th>Счёт или касса</th><th class="num">Сумма</th><th>Вал.</th><th>Кошелёк</th><th>Источник</th><th>Состояние</th></tr></thead>
-    <tbody>${shown.map(d=>{ const P = d.type==="ПЕР";
-      return `<tr class="clickable ${docCounts(d)?"":"excl"}" onclick="openDoc('${d.id}')"><td>${fmtD(d.date)}</td><td>${d.type}</td><td><a class="lnk">${esc(d.no1c||d.no)}</a></td><td>${esc(d.op||"")}</td>
-      <td>${P?`${esc(nm(org(d.from.org)))} → ${esc(nm(org(d.to.org)))}`:esc(nm(org(d.org)))}</td>
-      <td>${P?`${esc(nm(acc(d.from.acc)))} → ${esc(nm(acc(d.to.acc)))}`:esc(nm(acc(d.acc)))}</td>
-      <td class="num ${DOC_TYPES[d.type].sign<0?"neg":DOC_TYPES[d.type].sign>0?"pos":""}">${P?fmt(d.from.sum):fmtS(DOC_TYPES[d.type].sign*docVisTotal(d))}</td>
-      <td>${P?`${esc(curCode(acc(d.from.acc)?.cur))}→${esc(curCode(acc(d.to.acc)?.cur))}`:esc(curCode(d.cur))}</td>
-      <td>${esc(docWallets(d))}</td><td>${d.source==="file"?"файл 1С":"вручную"}</td><td>${docStateTag(d)}${d.type==="СБДС"&&!d.bankDone&&docCounts(d)?` <span class="tag warn">не исполнен банком</span>`:""}</td></tr>`; }).join("")
-      || `<tr><td colspan="11" class="muted">Документов нет</td></tr>`}</tbody></table></div>
-    ${list.length>DOCLIM?`<div class="body row"><button class="btn" onclick="DOCLIM+=500;render()">Показать ещё 500</button><button class="btn" onclick="DOCLIM=1e9;render()">Показать все</button></div>`:""}</div></div>`;
+  <div class="toolbar">
+    <label class="fld search"><span>Поиск</span><input type="search" value="${esc(DF.q)}" placeholder="Номер, GUID, контрагент, назначение" onchange="DF.q=this.value;DOCLIM=500;render()"></label>
+    <div class="fld"><span>Состояние</span>${seg(DF.state,[["","Все"],["in","В расчёте"],["out","Вне расчёта"]],"DF.state")}</div>
+    <div class="fld"><span>Источник</span>${seg(DF.src,[["","Все"],["file","Файл 1С"],["manual","Вручную"]],"DF.src")}</div>
+    <div class="fld"><span>&nbsp;</span><button type="button" class="btn ${DF_MORE||nf?"on":""}" aria-expanded="${DF_MORE}" onclick="DF_MORE=!DF_MORE;render()">Ещё фильтры${nf?` <span class="count">${nf}</span>`:""}</button></div>
+    <div class="grow"></div>
+    ${can?createMenu():""}
+  </div>
+  ${DF_MORE?`<div class="toolbar sub">
+    <label class="fld"><span>Тип</span><select onchange="DF.type=this.value;render()"><option value="">Все типы</option>${Object.entries(DOC_TYPES).map(([k,t])=>`<option value="${k}" ${DF.type===k?"selected":""}>${k} — ${esc(t.name)}</option>`).join("")}</select></label>
+    <label class="fld"><span>Организация</span><select onchange="DF.org=this.value;render()">${opts(DB.orgs,DF.org,{empty:"Все организации"})}</select></label>
+    <label class="fld"><span>Дата с</span><input type="date" value="${DF.from}" onchange="DF.from=this.value;render()"></label>
+    <label class="fld"><span>по</span><input type="date" value="${DF.to}" onchange="DF.to=this.value;render()"></label>
+    ${nf?`<button type="button" class="btn ghost" onclick="Object.assign(DF,{type:'',org:'',from:'',to:''});render()">Сбросить</button>`:""}
+  </div>`:""}
+  <div class="panel"><header><h2>${list.length} ${plural(list.length,"документ","документа","документов")}</h2>${list.length>DOCLIM?`<span class="hint">показаны первые ${DOCLIM}</span>`:""}<div style="flex:1"></div><button type="button" class="btn" onclick="exportDocs()">Выгрузить в Excel</button></header>
+  <div class="body flush"><div class="tbl-wrap"><table id="tDocs" class="list-t">
+    <thead><tr><th>Дата</th><th>Документ</th><th>Организация и счёт</th><th>Кошелёк</th><th class="num">Сумма</th><th>Состояние</th></tr></thead>
+    <tbody>${shown.map(d=>{ const P = d.type==="ПЕР"; const sg = DOC_TYPES[d.type].sign;
+      return `<tr class="clickable ${docCounts(d)?"":"excl"}" onclick="openDoc('${d.id}')"><td class="nowrap">${fmtD(d.date)}</td>
+      <td><span class="dtype">${d.type}</span> <a class="lnk">${esc(d.no1c||d.no)}</a><div class="sub"><span>${esc(d.op||DOC_TYPES[d.type].name)}</span> · <span>${d.source==="file"?"файл 1С":"вручную"}</span></div></td>
+      <td>${P?`${esc(nm(org(d.from.org)))} → ${esc(nm(org(d.to.org)))}`:esc(nm(org(d.org)))}<div class="sub">${P?`${esc(nm(acc(d.from.acc)))} → ${esc(nm(acc(d.to.acc)))}`:esc(nm(acc(d.acc)))}</div></td>
+      <td>${esc(docWallets(d))}</td>
+      <td class="num ${sg<0?"neg":sg>0?"pos":""}">${P?fmt(d.from.sum):fmtS(sg*docVisTotal(d))}<div class="sub">${P?`${esc(curCode(acc(d.from.acc)?.cur))} → ${esc(curCode(acc(d.to.acc)?.cur))}`:esc(curCode(d.cur))}</div></td>
+      <td>${docStateTag(d)}${d.type==="СБДС"&&!d.bankDone&&docCounts(d)?`<div class="sub"><span class="tag warn">не исполнен банком</span></div>`:""}</td></tr>`; }).join("")
+      || `<tr><td colspan="6" class="empty-cell">Под фильтры не попал ни один документ.${nf||DF.q||DF.state||DF.src?`<br><button type="button" class="btn sm" style="margin-top:10px" onclick="Object.assign(DF,{src:'',type:'',org:'',from:'',to:'',q:'',state:''});render()">Сбросить фильтры</button>`:""}</td></tr>`}</tbody></table></div>
+    ${list.length>DOCLIM?`<div class="body row"><button class="btn" onclick="DOCLIM+=500;render()">Показать ещё 500</button><button class="btn ghost" onclick="DOCLIM=1e9;render()">Показать все</button></div>`:""}</div></div>`;
 }
+function plural(n, one, few, many){ const a = Math.abs(n)%100, b = a%10; if(LANG==="en") return many; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; }
 
 /* --- просмотр / редактирование --- */
 let ED = null, EDerr = null;
@@ -422,21 +439,23 @@ function viewOps(){
   list.sort((a,b)=>a.date<b.date?1:-1);
   return `<h1>Внутренние операции</h1>
   <p class="lede">Движения между кошельками без платежа в 1С. Деньги остаются на том же счёте, меняется только кошелёк-владелец (ТР-27). Вводит казначей, подтверждение не нужно, правка открыта до закрытия периода.</p>
-  <div class="panel"><div class="body filters">
-    <label class="fld"><span>Вид</span><select onchange="OF.kind=this.value;render()"><option value="">Все</option>${Object.entries(OP_KINDS).map(([k,t])=>`<option value="${k}" ${OF.kind===k?"selected":""}>${esc(t.name)}</option>`).join("")}</select></label>
-    <label class="fld"><span>С</span><input type="date" value="${OF.from}" onchange="OF.from=this.value;render()"></label>
-    <label class="fld"><span>По</span><input type="date" value="${OF.to}" onchange="OF.to=this.value;render()"></label>
-    <label class="fld"><span>Состояние</span><select onchange="OF.state=this.value;render()"><option value="">Все</option><option value="draft" ${OF.state==="draft"?"selected":""}>Черновики</option><option value="del" ${OF.state==="del"?"selected":""}>Помеченные на удаление</option></select></label>
-    <div style="flex:1"></div>
-    ${canEnter(u)?`<button class="btn primary" onclick="newOp()">Новая операция</button><button class="btn" onclick="newOp({kind:'exchange'})">Обмен на двух счетах</button>`:""}
+  <div class="toolbar">
+    <label class="fld"><span>Вид</span><select onchange="OF.kind=this.value;render()"><option value="">Все виды</option>${Object.entries(OP_KINDS).map(([k,t])=>`<option value="${k}" ${OF.kind===k?"selected":""}>${esc(t.name)}</option>`).join("")}</select></label>
+    <label class="fld"><span>Дата с</span><input type="date" value="${OF.from}" onchange="OF.from=this.value;render()"></label>
+    <label class="fld"><span>по</span><input type="date" value="${OF.to}" onchange="OF.to=this.value;render()"></label>
+    <div class="fld"><span>Состояние</span>${seg(OF.state,[["","Все"],["draft","Черновики"],["del","На удаление"]],"OF.state")}</div>
+    <div class="grow"></div>
+    ${canEnter(u)?`<button type="button" class="btn primary" onclick="newOp()">Новая операция</button><button type="button" class="btn" onclick="newOp({kind:'exchange'})">Обмен на двух счетах</button>`:""}
     ${exportBtn("tOps","Внутренние операции")}
-  </div></div>
-  <div class="panel"><div class="body flush"><div class="tbl-wrap"><table id="tOps"><thead><tr><th>Дата</th><th>Номер</th><th>Вид</th><th>Отправитель</th><th>Получатель</th><th>Счёт или касса</th><th class="num">Сумма</th><th>Вал.</th><th class="num">USD</th><th>Договор</th><th>Автор</th><th>Состояние</th></tr></thead>
+  </div>
+  <div class="panel"><header><h2>${list.length} ${plural(list.length,"операция","операции","операций")}</h2></header><div class="body flush"><div class="tbl-wrap"><table id="tOps" class="list-t"><thead><tr><th>Дата</th><th>Операция</th><th>Откуда → куда</th><th>Счёт или касса</th><th class="num">Сумма</th><th class="num">USD</th><th>Состояние</th></tr></thead>
   <tbody>${list.map(o=>{ const L = opLegs(o);
-    return `<tr class="clickable ${opCounts(o)||(o.linkedDoc&&!o.deleted)?"":"excl"}" onclick="openOp('${o.id}')"><td>${fmtD(o.date)}</td><td><a class="lnk">${esc(o.no)}</a></td><td>${esc(OP_KINDS[o.kind].name)}</td>
-    <td>${esc(nm(wal(o.from)))}</td><td>${esc(nm(wal(o.to)))}</td><td>${L.map(l=>`${l.n===2?"нога 2: ":o.kind==="exchange"?"нога 1: ":""}${esc(nm(acc(l.acc)))}`).join("<br>")}</td>
-    <td class="num">${L.map(l=>fmt(l.sum)).join("<br>")}</td><td>${L.map(l=>esc(curCode(l.cur))).join("<br>")}</td><td class="num">${L.map(l=>fmt(l.usd)).join("<br>")}</td>
-    <td>${esc(nm(contract(o.contract))||"")}</td><td>${esc(nm(usr(o.author)))}</td><td>${opState(o)}</td></tr>`; }).join("") || `<tr><td colspan="12" class="muted">Операций нет</td></tr>`}</tbody></table></div></div></div>`;
+    return `<tr class="clickable ${opCounts(o)||(o.linkedDoc&&!o.deleted)?"":"excl"}" onclick="openOp('${o.id}')"><td class="nowrap">${fmtD(o.date)}</td>
+    <td><a class="lnk">${esc(o.no||"черновик")}</a><div class="sub"><span>${esc(OP_KINDS[o.kind].name)}</span>${o.contract?` · <span>${esc(nm(contract(o.contract)))}</span>`:""}</div></td>
+    <td>${esc(nm(wal(o.from)))} <span class="muted">→</span> ${esc(nm(wal(o.to)))}<div class="sub">${esc(nm(usr(o.author)))}</div></td>
+    <td>${L.map(l=>`${l.n===2?"нога 2: ":o.kind==="exchange"?"нога 1: ":""}${esc(nm(acc(l.acc)))}`).join("<br>")}</td>
+    <td class="num">${L.map(l=>`${fmt(l.sum)} <span class="muted">${esc(curCode(l.cur))}</span>`).join("<br>")}</td><td class="num">${L.map(l=>fmt(l.usd)).join("<br>")}</td>
+    <td>${opState(o)}</td></tr>`; }).join("") || `<tr><td colspan="7" class="empty-cell">Операций нет${canEnter(u)?`<br><button type="button" class="btn sm primary" style="margin-top:10px" onclick="newOp()">Создать первую операцию</button>`:""}</td></tr>`}</tbody></table></div></div></div>`;
 }
 
 let OE = null, OEerr = null, OEwarn = null;

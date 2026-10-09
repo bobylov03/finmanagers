@@ -31,45 +31,112 @@ function go(v){
   VIEW = v; window.scrollTo(0,0);
   render();
 }
-/* --- иконки меню (обводка, 24×24) --- */
-const NAV_ICONS = {
-  dash:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
-  rep37:'<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18M16 15h2M6 6V4.5h12V6"/>',
-  rep75:'<path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>',
-  rep38:'<path d="M3 3v18h18"/><path d="M7 15v3M11 11v7M15 7v11M19 12v6"/>',
-  rep40:'<path d="M7 7h13l-3-3M17 17H4l3 3"/>',
-  recon:'<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
-  docs:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
-  ops:'<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
-  nowallet:'<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.7M12 17h.01"/>',
-  formalize:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
-  closedch:'<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
-  wallets:'<path d="M12 2l10 5-10 5L2 7z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/>',
-  rules:'<path d="M4 6h9M19 6h1M4 12h3M13 12h7M4 18h11M21 18h-1"/><circle cx="16" cy="6" r="2.5"/><circle cx="10" cy="12" r="2.5"/><circle cx="18" cy="18" r="2.5"/>',
-  refs:'<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
-  import:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/>',
-  xlog:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-  opening:'<path d="M4 22V4M4 4h12l-2 4 2 4H4"/>',
-  users:'<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-4-6.3"/>',
-  mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
-  settings:'<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>',
-  audit:'<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
-};
-const navIcon = id => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_ICONS[id]||NAV_ICONS.docs}</svg>`;
 function renderNav(){
   $("#nav").innerHTML = menu().map(([g,items])=>`<div class="rail-group">${esc(g)}</div>` +
-    items.map(([id,t,c])=>`<a class="${VIEW===id?"on":""}" onclick="go('${id}')">${navIcon(id)}<span>${esc(t)}</span><span class="cnt">${c||""}</span></a>`).join("")).join("");
+    items.map(([id,t,c])=>`<a class="${VIEW===id?"on":""}" onclick="go('${id}')"><span>${esc(t)}</span><span class="cnt">${c||""}</span></a>`).join("")).join("");
 }
+/* --- всплывающие панели в шапке и на экранах: одна открыта за раз --- */
+let POP = null;
+function togglePop(id, ev){ if(ev) ev.stopPropagation(); POP = POP===id ? null : id; if(String(id).startsWith("v:")||String(POP||"").startsWith("v:")) render(); else { renderTop(); translateDom($(".topbar")); } }
+function closePop(){ if(!POP) return; const v = String(POP).startsWith("v:"); POP = null; if(v) render(); else { renderTop(); translateDom($(".topbar")); } }
+document.addEventListener("click", e=>{ if(POP && !e.target.closest(".popwrap")) closePop(); });
+
+function initials(n){ return String(n||"?").split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase(); }
+function prevMonthEnd(){ const d = new Date(CUR.date+"T00:00:00Z"); d.setUTCDate(0); return d.toISOString().slice(0,10); }
+function setCurDate(d){ CUR.date = d || todayISO(); inval(); render(); }
+
 function renderTop(){
-  $("#userBox").innerHTML = `<label>Пользователь</label><b>${esc(nm(me()))}</b>
-    <button class="btn sm" onclick="changeOwnPw()">Пароль</button><button class="btn sm" onclick="logout()">Выйти</button>`;
-  $("#curDate").value = CUR.date;
   const u = me();
-  $("#userTags").innerHTML = u.roles.map(r=>`<span class="tag ${r==="admin"?"ok":""}">${esc(ROLES[r])}</span>`).join(" ");
+  $("#userBox").innerHTML = `<button type="button" class="userbtn" onclick="togglePop('user',event)" aria-expanded="${POP==="user"}">
+      <span class="avatar notr">${esc(initials(nm(u)))}</span><span class="uname">${esc(nm(u))}</span><span class="caret"></span></button>
+    ${POP==="user" ? `<div class="pop pop-right" role="menu">
+      <div class="pop-head"><b>${esc(nm(u))}</b><span class="muted">${esc(u.login||"")}</span>
+        <div class="row" style="margin-top:8px;gap:4px">${u.roles.map(r=>`<span class="tag ${r==="admin"?"ok":""}">${esc(ROLES[r])}</span>`).join("")}</div></div>
+      <button type="button" class="pop-item" onclick="POP=null;renderTop();changeOwnPw()">Сменить пароль</button>
+      <button type="button" class="pop-item" onclick="logout()">Выйти</button></div>` : ""}`;
+  $("#curDate").value = CUR.date;
+  const t = todayISO(), pm = prevMonthEnd();
+  $("#dateQuick").innerHTML = [[t,"Сегодня"],[pm,"Конец прошлого месяца"]].map(([d,l])=>`<button type="button" class="chip ${CUR.date===d?"on":""}" onclick="setCurDate('${d}')">${l}</button>`).join("");
+  $("#userTags").innerHTML = "";
   $("#periodTag").innerHTML = (SAVE_ERR ? `<span class="tag off" title="${esc(SAVE_ERR)}">данные не сохранены</span> ` : "") + (DB.settings.closedTo ? `<span class="tag warn" title="ТР-55">период закрыт по ${fmtD(DB.settings.closedTo)}</span>` : "");
-  const n = notifications(u).length; const dot = $("#bellDot");
-  dot.textContent = n; dot.classList.toggle("hidden", !n);
+  const nf = notifications(u); const dot = $("#bellDot");
+  dot.textContent = nf.length; dot.classList.toggle("hidden", !nf.length);
+  $("#bell").setAttribute("aria-expanded", POP==="bell");
+  $("#bellPop").innerHTML = POP==="bell" ? `<div class="pop pop-right pop-wide" role="dialog" aria-label="Уведомления">
+      <div class="pop-title">Уведомления <span class="muted">${nf.length||""}</span></div>
+      ${nf.length ? nf.map(n=>`<button type="button" class="note ${n.lvl}" onclick="POP=null;go('${n.go}')"><span class="note-mark"></span><span class="note-text">${esc(n.text)} <span class="tzref">${n.tr}</span></span></button>`).join("")
+        : `<p class="muted" style="margin:6px 14px 14px">Новых уведомлений нет.</p>`}</div>` : "";
 }
+
+/* --- шапка страницы: заголовок + свёрнутое пояснение «Как это работает» --- */
+let HELP = {}; try{ HELP = JSON.parse(localStorage.getItem("wallets-help")||"{}"); }catch(e){}
+function toggleHelp(){ HELP[VIEW] = !HELP[VIEW]; try{ localStorage.setItem("wallets-help", JSON.stringify(HELP)); }catch(e){} render(); }
+function pageHead(){
+  const v = $("#view"); const h = v.querySelector(":scope > h1"); if(!h) return;
+  const lede = h.nextElementSibling && h.nextElementSibling.matches("p.lede") ? h.nextElementSibling : null;
+  const head = document.createElement("div"); head.className = "page-head";
+  const crumb = menu().find(g=>g[1].some(x=>x[0]===VIEW));
+  head.innerHTML = `<div class="ph-main">${crumb?`<div class="crumb">${esc(crumb[0])}</div>`:""}</div>`;
+  h.parentNode.insertBefore(head, h); head.firstChild.appendChild(h);
+  if(lede){
+    const b = document.createElement("button"); b.type = "button"; b.className = "help-toggle"; b.setAttribute("aria-expanded", !!HELP[VIEW]);
+    b.textContent = HELP[VIEW] ? "Скрыть пояснение" : "Как это работает"; b.onclick = toggleHelp;
+    head.appendChild(b);
+    lede.classList.add("help"); if(!HELP[VIEW]) lede.hidden = true;
+    head.after(lede);
+  }
+}
+
+/* --- поиск по разделам и действиям (Ctrl+K) --- */
+let CMD = null;
+function cmdItems(){
+  const u = me(); const out = [];
+  menu().forEach(([g,items])=>items.forEach(([id,t])=>out.push({t, g, run:()=>go(id)})));
+  if(canEnter(u)){
+    out.push({t:"Новое поступление на счёт", g:"Действие", run:()=>newDoc("ПБДС")});
+    out.push({t:"Новое поступление в кассу", g:"Действие", run:()=>newDoc("ПКО")});
+    out.push({t:"Новая конвертация или переброска", g:"Действие", run:()=>newDoc("ПЕР")});
+    out.push({t:"Новая внутренняя операция", g:"Действие", run:()=>newOp()});
+  }
+  visibleTree().forEach(w=>out.push({t:w.name, g:"Кошелёк", run:()=>{ RF.rep75.wallets=[w.id]; go("rep75"); }}));
+  out.push({t:"Сменить пароль", g:"Профиль", run:()=>changeOwnPw()});
+  return out;
+}
+function openCmd(){ CMD = {q:"", i:0}; renderCmd(); setTimeout(()=>{ const el = $("#cmdQ"); if(el) el.focus(); },0); }
+function closeCmd(){ CMD = null; $("#cmdHost").innerHTML = ""; }
+function cmdList(){ const q = norm(CMD.q); return cmdItems().filter(x=>!q || norm(x.t+" "+x.g).includes(q)).slice(0,12); }
+function renderCmd(){
+  if(!CMD) return; const L = cmdList(); CMD.i = Math.min(CMD.i, Math.max(0,L.length-1));
+  const host = $("#cmdHost");
+  if(!host.firstChild){
+    host.innerHTML = `<div class="scrim cmd-scrim" onmousedown="if(event.target===this)closeCmd()"><div class="cmd" role="dialog" aria-label="Поиск">
+      <input id="cmdQ" type="text" autocomplete="off" placeholder="Раздел, действие или кошелёк" oninput="CMD.q=this.value;CMD.i=0;renderCmd()" onkeydown="cmdKey(event)">
+      <div id="cmdL" class="cmd-list" role="listbox"></div><div class="cmd-foot">↑↓ выбрать · Enter открыть · Esc закрыть</div></div></div>`;
+  }
+  $("#cmdL").innerHTML = L.map((x,i)=>`<div class="cmd-item ${i===CMD.i?"on":""}" role="option" onmousemove="if(CMD.i!==${i}){CMD.i=${i};renderCmd()}" onclick="cmdRun(${i})"><span>${esc(x.t)}</span><span class="muted">${esc(x.g)}</span></div>`).join("") || `<div class="cmd-empty muted">Ничего не найдено</div>`;
+  translateDom(host);
+}
+function cmdRun(i){ const x = cmdList()[i]; closeCmd(); if(x) x.run(); }
+function cmdKey(e){
+  if(e.key==="ArrowDown"){ e.preventDefault(); CMD.i++; renderCmd(); }
+  else if(e.key==="ArrowUp"){ e.preventDefault(); CMD.i = Math.max(0,CMD.i-1); renderCmd(); }
+  else if(e.key==="Enter"){ e.preventDefault(); cmdRun(CMD.i); }
+  else if(e.key==="Escape"){ e.preventDefault(); e.stopPropagation(); closeCmd(); }
+}
+document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && (e.key==="k"||e.key==="K"||e.code==="KeyK") && SESSION){ e.preventDefault(); CMD ? closeCmd() : openCmd(); } });
+
+/* --- выбор кошельков: кнопка с выпадающим деревом --- */
+function walletPicker(key, selected, onToggle, {label="Кошельки", all="Все доступные", onClear="", onAll=""}={}){
+  const id = "v:"+key; const open = POP===id;
+  const txt = !selected.length ? all : selected.length===1 ? nm(wal(selected[0])) : `${nm(wal(selected[0]))} и ещё ${selected.length-1}`;
+  return `<div class="fld popwrap"><span>${esc(label)}</span>
+    <button type="button" class="picker ${selected.length?"set":""}" onclick="togglePop('${id}',event)" aria-expanded="${open}"><span>${esc(txt)}</span><span class="caret"></span></button>
+    ${open?`<div class="pop pop-left">${walletChecklist(selected,onToggle)}
+      <div class="pop-foot">${onAll?`<button type="button" class="btn sm" onclick="${onAll}">Выбрать все</button>`:""}${onClear?`<button type="button" class="btn sm" onclick="${onClear}">Снять</button>`:""}<div style="flex:1"></div><button type="button" class="btn sm primary" onclick="closePop()">Готово</button></div></div>`:""}</div>`;
+}
+/* --- переключатель-флажок в виде «чипа» --- */
+function chip(on, onclick, label){ return `<button type="button" class="chip ${on?"on":""}" aria-pressed="${!!on}" onclick="${onclick}">${label}</button>`; }
+
 let R_BUSY = false, RM_BUSY = false;
 function render(){
   if(R_BUSY){ setTimeout(render,0); return; }
@@ -84,6 +151,7 @@ function renderInner(){
     users:viewUsers, mail:viewMail, settings:viewSettings, audit:viewAudit}[VIEW] || viewDash;
   let html; try{ html = V(); }catch(e){ console.error(e); html = `<div class="alert err">Ошибка отображения: ${esc(e.message)}</div>`; }
   $("#view").innerHTML = html;
+  pageHead();
   logReportView();
   renderLang(); translateDom($("#nav")); translateDom($(".topbar")); translateDom($("#view"));
   renderModal();
@@ -98,7 +166,7 @@ function renderModalInner(){
   const scrollEl = host.querySelector(".modal .body"); const st = scrollEl ? scrollEl.scrollTop : 0;
   const active = document.activeElement; const aid = active && active.id && host.contains(active) ? active.id : null;
   const selS = aid && active.selectionStart!=null ? active.selectionStart : null;
-  host.innerHTML = `<div class="scrim" onmousedown="if(event.target===this)closeModal()"><div class="modal" role="dialog" aria-modal="true" style="${MODAL.width?`width:min(${MODAL.width}px,100%)`:""}">
+  host.innerHTML = `<div class="scrim ${MODAL.drawer?"drawer-scrim":""}" onmousedown="if(event.target===this)closeModal()"><div class="modal ${MODAL.drawer?"drawer":""}" role="dialog" aria-modal="true" style="${MODAL.width&&!MODAL.drawer?`width:min(${MODAL.width}px,100%)`:""}">
     <header><h3>${MODAL.title}</h3><div style="flex:1"></div>${MODAL.headerExtra||""}<button class="btn sm" onclick="closeModal()" aria-label="Закрыть">✕</button></header>
     <div class="body">${MODAL.body()}</div>
     <footer>${MODAL.footer ? MODAL.footer() : `<button class="btn" onclick="closeModal()">Закрыть</button>`}</footer>
