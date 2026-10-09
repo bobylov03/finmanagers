@@ -28,11 +28,13 @@ function menu(){
 function allowedViews(){ return new Set(menu().flatMap(g=>g[1].map(x=>x[0]))); }
 function go(v){
   if(!allowedViews().has(v)) v = "dash";
-  VIEW = v; window.scrollTo(0,0);
+  if(v!==VIEW) ROUTE_PUSH = true;
+  VIEW = v; POP = null; window.scrollTo(0,0);
   render();
 }
 function renderNav(){
-  $("#nav").innerHTML = menu().map(([g,items])=>`<div class="rail-group">${esc(g)}</div>` +
+  const sv = savedViews();
+  $("#nav").innerHTML = (sv.length ? `<div class="rail-group">Мои отчёты</div>` + sv.map((x,i)=>`<a class="saved ${location.hash===x.hash?"on":""}" onclick="openSaved(${i})" title="${esc(x.hash)}"><span class="notr">${esc(x.name)}</span><button type="button" class="rm" aria-label="Удалить из «Мои отчёты»" onclick="event.stopPropagation();removeSaved(${i})">×</button></a>`).join("") : "") + menu().map(([g,items])=>`<div class="rail-group">${esc(g)}</div>` +
     items.map(([id,t,c])=>`<a class="${VIEW===id?"on":""}" onclick="go('${id}')"><span>${esc(t)}</span><span class="cnt">${c||""}</span></a>`).join("")).join("");
 }
 /* --- всплывающие панели в шапке и на экранах: одна открыта за раз --- */
@@ -78,10 +80,11 @@ function pageHead(){
   const crumb = menu().find(g=>g[1].some(x=>x[0]===VIEW));
   head.innerHTML = `<div class="ph-main">${crumb?`<div class="crumb">${esc(crumb[0])}</div>`:""}</div>`;
   h.parentNode.insertBefore(head, h); head.firstChild.appendChild(h);
+  const acts = document.createElement("div"); acts.className = "ph-actions"; acts.innerHTML = saveViewButton(); head.appendChild(acts);
   if(lede){
     const b = document.createElement("button"); b.type = "button"; b.className = "help-toggle"; b.setAttribute("aria-expanded", !!HELP[VIEW]);
     b.textContent = HELP[VIEW] ? "Скрыть пояснение" : "Как это работает"; b.onclick = toggleHelp;
-    head.appendChild(b);
+    acts.appendChild(b);
     lede.classList.add("help"); if(!HELP[VIEW]) lede.hidden = true;
     head.after(lede);
   }
@@ -152,8 +155,10 @@ function renderInner(){
   let html; try{ html = V(); }catch(e){ console.error(e); html = `<div class="alert err">Ошибка отображения: ${esc(e.message)}</div>`; }
   $("#view").innerHTML = html;
   pageHead();
+  enableSort($("#view"));
   logReportView();
   renderLang(); translateDom($("#nav")); translateDom($(".topbar")); translateDom($("#view"));
+  syncHash();
   renderModal();
 }
 function renderModal(){
@@ -167,16 +172,30 @@ function renderModalInner(){
   const active = document.activeElement; const aid = active && active.id && host.contains(active) ? active.id : null;
   const selS = aid && active.selectionStart!=null ? active.selectionStart : null;
   host.innerHTML = `<div class="scrim ${MODAL.drawer?"drawer-scrim":""}" onmousedown="if(event.target===this)closeModal()"><div class="modal ${MODAL.drawer?"drawer":""}" role="dialog" aria-modal="true" style="${MODAL.width&&!MODAL.drawer?`width:min(${MODAL.width}px,100%)`:""}">
-    <header><h3>${MODAL.title}</h3><div style="flex:1"></div>${MODAL.headerExtra||""}<button class="btn sm" onclick="closeModal()" aria-label="Закрыть">✕</button></header>
+    ${MSTACK.length?`<div class="modal-back"><button type="button" class="back-btn" onclick="closeModal()">← Назад: <span>${esc(stripTags(MSTACK[MSTACK.length-1].title))}</span></button></div>`:""}
+    <header><h3>${MODAL.title}</h3><div style="flex:1"></div>${MODAL.headerExtra||""}<button class="btn sm" onclick="closeAllModals()" aria-label="Закрыть">✕</button></header>
     <div class="body">${MODAL.body()}</div>
-    <footer>${MODAL.footer ? MODAL.footer() : `<button class="btn" onclick="closeModal()">Закрыть</button>`}</footer>
+    <footer>${MODAL.submit?`<span class="kbd-hint">Ctrl+Enter — ${esc(MODAL.submitLabel||"сохранить")}</span>`:""}${MODAL.footer ? MODAL.footer() : `<button class="btn" onclick="closeModal()">Закрыть</button>`}</footer>
   </div></div>`;
   translateDom(host);
+  enableSort(host);
+  if(MODAL.onRender) try{ MODAL.onRender(); }catch(e){}
   const b = host.querySelector(".modal .body"); if(b) b.scrollTop = st;
   if(aid){ const el = document.getElementById(aid); if(el){ el.focus(); try{ if(selS!=null) el.setSelectionRange(selS,selS); }catch(e){} } }
 }
-function openModal(cfg){ MODAL = cfg; renderModal(); }
-function closeModal(){ MODAL = null; renderModal(); }
+/* окна открываются стопкой: «Назад» возвращает к предыдущему (расшифровка → документ → назад) */
+let MSTACK = [];
+function stripTags(h){ const d = document.createElement("div"); d.innerHTML = h||""; return d.textContent.trim(); }
+function openModal(cfg){ if(MODAL && !cfg.replace) MSTACK.push(MODAL); MODAL = cfg; renderModal(); }
+function closeModal(){ MODAL = MSTACK.pop() || null; renderModal(); }
+function closeAllModals(){ MSTACK = []; MODAL = null; renderModal(); }
+document.addEventListener("change", e=>{ if(MODAL && MODAL.onChange && e.target.closest("#modalHost")) MODAL.onChange(); });
+document.addEventListener("keydown", e=>{
+  if(MODAL && MODAL.submit && e.key==="Enter" && (e.ctrlKey||e.metaKey)){
+    e.preventDefault(); const a = document.activeElement; if(a && a.blur) a.blur();
+    setTimeout(()=>{ if(MODAL && MODAL.submit) MODAL.submit(); }, 0);
+  }
+});
 function refreshModal(){ if(MODAL) renderModal(); }
 
 /* --- выпадающие списки --- */
@@ -261,4 +280,113 @@ function walletChecklist(selected, onToggle, {only}={}){
   const V = only || visibleWallets();
   return `<div class="msel">${tree(DB.wallets).filter(w=>V.has(w.id)).map(w=>`<label class="chk" style="padding-left:${w._lvl*14}px">
     <input type="checkbox" ${selected.includes(w.id)?"checked":""} onchange="${onToggle}('${w.id}',this.checked)"> ${esc(w.name)}${w.closed?` <span class="muted">(закрыт)</span>`:""}</label>`).join("") || `<span class="muted">Кошельков нет</span>`}</div>`;
+}
+
+/* ============================================================
+   АДРЕСА СТРАНИЦ: #/раздел?фильтры — работают F5, «Назад», ссылки
+   ============================================================ */
+let ROUTE_PUSH = false;
+const ROUTE_STATE = {rep37:()=>RF.rep37, rep75:()=>RF.rep75, rep38:()=>RF.rep38, rep40:()=>RF.rep40, recon:()=>RF.recon, docs:()=>DF, ops:()=>OF};
+let ROUTE_DEF = null;
+function routeDefaults(){ if(!ROUTE_DEF){ ROUTE_DEF = {}; Object.entries(ROUTE_STATE).forEach(([k,f])=>{ ROUTE_DEF[k] = JSON.parse(JSON.stringify(f())); }); } return ROUTE_DEF; }
+function buildHash(){
+  const p = new URLSearchParams(); const D = routeDefaults()[VIEW];
+  if(CUR.date && CUR.date!==todayISO()) p.set("d", CUR.date);
+  const st = ROUTE_STATE[VIEW] && ROUTE_STATE[VIEW]();
+  if(st && D) Object.entries(st).forEach(([k,v])=>{
+    if(k.startsWith("_") || !(k in D)) return;
+    if(JSON.stringify(v)===JSON.stringify(D[k])) return;
+    p.set(k, Array.isArray(v) ? v.join(",") : typeof v==="boolean" ? (v?"1":"0") : String(v??""));
+  });
+  const q = p.toString(); return "#/" + VIEW + (q ? "?" + q : "");
+}
+function syncHash(){
+  if(!SESSION) return;
+  const h = buildHash();
+  if(location.hash !== h){ try{ history[ROUTE_PUSH?"pushState":"replaceState"](null, "", h); }catch(e){} }
+  ROUTE_PUSH = false;
+}
+/** Разобрать адрес и выставить раздел, дату и фильтры. Возвращает true, если в адресе был раздел */
+function applyHash(){
+  const m = location.hash.match(/^#\/([A-Za-z0-9]+)(?:\?(.*))?$/); if(!m) return false;
+  const v = m[1], p = new URLSearchParams(m[2]||"");
+  const D = routeDefaults();
+  Object.entries(ROUTE_STATE).forEach(([k,f])=>{ const st = f(); Object.keys(D[k]).forEach(x=>{ st[x] = JSON.parse(JSON.stringify(D[k][x])); }); });
+  if(ROUTE_STATE[v]){ const st = ROUTE_STATE[v](), d = D[v];
+    p.forEach((val,k)=>{ if(!(k in d)) return; st[k] = Array.isArray(d[k]) ? val.split(",").filter(Boolean) : typeof d[k]==="boolean" ? val==="1" : val; }); }
+  const d = p.get("d"); CUR.date = d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayISO(); inval();
+  VIEW = allowedViews().has(v) ? v : "dash";
+  return true;
+}
+window.addEventListener("popstate", ()=>{ if(!SESSION) return; applyHash(); POP = null; MSTACK = []; MODAL = null; render(); });
+
+/* --- «Мои отчёты»: сохранённые адреса с фильтрами (хранятся в этом браузере) --- */
+function savedViews(){ try{ return JSON.parse(localStorage.getItem("wallets-views")||"[]"); }catch(e){ return []; } }
+function setSavedViews(a){ try{ localStorage.setItem("wallets-views", JSON.stringify(a)); }catch(e){ toast("Браузер не дал сохранить — проверьте настройки сайта", {lvl:"err"}); } }
+function openSaved(i){ const x = savedViews()[i]; if(!x) return; history.pushState(null,"",x.hash); applyHash(); POP = null; render(); }
+function removeSaved(i){ const a = savedViews(); const x = a.splice(i,1)[0]; setSavedViews(a); renderNav(); translateDom($("#nav"));
+  toast(`Удалено из «Мои отчёты»: ${x.name}`, {action:()=>{ const b = savedViews(); b.splice(i,0,x); setSavedViews(b); renderNav(); translateDom($("#nav")); }}); }
+function saveCurrentView(){
+  const el = $("#svName"); const name = (el && el.value.trim()) || "";
+  if(!name){ el && el.focus(); return; }
+  const a = savedViews().filter(x=>x.name!==name); a.push({name, hash:buildHash()}); setSavedViews(a);
+  POP = null; render(); toast(`Сохранено в «Мои отчёты»: ${name}`, {lvl:"ok"});
+}
+function saveViewButton(){
+  if(!ROUTE_STATE[VIEW]) return "";
+  const open = POP==="v:save"; const title = (menu().flatMap(g=>g[1]).find(x=>x[0]===VIEW)||[])[1]||"";
+  return `<div class="popwrap"><button type="button" class="help-toggle" onclick="togglePop('v:save',event)" aria-expanded="${open}">Сохранить в «Мои отчёты»</button>
+    ${open?`<div class="pop pop-right save-pop"><div class="pop-title">Сохранить отчёт с текущими фильтрами</div>
+      <form onsubmit="event.preventDefault();saveCurrentView()" class="stack" style="padding:4px 10px 10px">
+      <input type="text" id="svName" value="${esc(title)} на ${fmtD(CUR.date)}" maxlength="80">
+      <div class="row"><div style="flex:1"></div><button type="button" class="btn sm" onclick="closePop()">Отмена</button><button class="btn sm primary">Сохранить</button></div></form></div>`:""}</div>`;
+}
+
+/* ============================================================
+   ВСПЛЫВАЮЩИЕ СООБЩЕНИЯ вместо системных окон
+   ============================================================ */
+function toast(msg, {lvl="info", action=null, actionLabel="Отменить", timeout}={}){
+  const host = $("#toastHost"); if(!host) return;
+  const el = document.createElement("div"); el.className = "toast " + lvl; el.setAttribute("role", lvl==="err"?"alert":"status");
+  el.innerHTML = `<span class="toast-text"></span>${action?`<button type="button" class="toast-act">${esc(actionLabel)}</button>`:""}<button type="button" class="toast-x" aria-label="Закрыть">×</button>`;
+  el.querySelector(".toast-text").textContent = String(msg);
+  const kill = () => { el.classList.add("out"); setTimeout(()=>el.remove(), 180); };
+  el.querySelector(".toast-x").onclick = kill;
+  if(action) el.querySelector(".toast-act").onclick = () => { kill(); action(); };
+  host.appendChild(el); translateDom(el);
+  setTimeout(kill, timeout || (lvl==="err" ? 12000 : action ? 9000 : 5000));
+}
+function alertLevel(m){ return /^(Создано|Пароль изменён|Отправлено|Заполнено|Сохранено)/.test(String(m)) ? "ok" : "warn"; }
+
+/* ============================================================
+   СОРТИРОВКА ТАБЛИЦ по клику на заголовок (таблицы с классом sortable)
+   ============================================================ */
+let TSORT = {};
+function cellKey(td){
+  if(!td) return "";
+  const txt = (td.innerText||"").trim().split("\n")[0];
+  const m = txt.match(/^(\d{2})\.(\d{2})\.(\d{4})/); if(m) return Number(m[3]+m[2]+m[1]);
+  const n = parseNum(txt.replace(/\b[A-Z]{3}\b/g,"").replace(/^\+/,"").trim());
+  return isFinite(n) && /\d/.test(txt) ? n : txt.toLowerCase();
+}
+function applySort(t){
+  const s = TSORT[t.id]; const head = t.tHead && t.tHead.rows[t.tHead.rows.length-1]; if(!head) return;
+  [...head.cells].forEach((th,i)=>{ if(!th.classList.contains("nosort")) th.setAttribute("aria-sort", s&&s.i===i ? (s.dir>0?"ascending":"descending") : "none"); });
+  if(!s) return; const tb = t.tBodies[0]; if(!tb) return;
+  const rows = [...tb.rows]; const fixed = rows.filter(r=>r.classList.contains("tot") || r.querySelector(".empty-cell"));
+  const data = rows.filter(r=>!fixed.includes(r));
+  data.sort((a,b)=>{ const x = cellKey(a.cells[s.i]), y = cellKey(b.cells[s.i]);
+    return (typeof x==="number" && typeof y==="number" ? x-y : typeof x==="number" ? -1 : typeof y==="number" ? 1 : String(x).localeCompare(String(y),"ru")) * s.dir; });
+  data.concat(fixed).forEach(r=>tb.appendChild(r));
+}
+function enableSort(root){
+  if(!root) return;
+  root.querySelectorAll("table.sortable").forEach(t=>{
+    if(!t.id || !t.tHead) return; const head = t.tHead.rows[t.tHead.rows.length-1];
+    [...head.cells].forEach((th,i)=>{ if(th.classList.contains("nosort") || !th.textContent.trim()) { th.classList.add("nosort"); return; }
+      th.classList.add("sort-th"); th.tabIndex = 0; th.title = "Сортировать";
+      const go_ = () => { const s = TSORT[t.id]; TSORT[t.id] = s && s.i===i ? {i, dir:-s.dir} : {i, dir: th.classList.contains("num") ? -1 : 1}; applySort(t); };
+      th.onclick = go_; th.onkeydown = e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); go_(); } }; });
+    applySort(t);
+  });
 }

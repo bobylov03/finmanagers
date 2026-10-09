@@ -27,18 +27,19 @@ function srcTitle(f){
 function openSrc(k, id){ if(k==="op") openOp(id); else if(k==="doc") openDoc(id); else if(isAdmin(me())) go("opening"); }
 /** Переход до документа: список фактов */
 function showFacts(title, pred){
-  const list = visFacts().filter(pred).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
-  const byCur = {}; list.forEach(f=>byCur[f.cur]=(byCur[f.cur]||0)+f.sum);
-  openModal({title:esc(title), drawer:true, width:1180, body:()=>`
+  openModal({title:esc(title), drawer:true, width:1180, body:()=>{
+    const list = visFacts().filter(pred).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+    const byCur = {}; list.forEach(f=>byCur[f.cur]=(byCur[f.cur]||0)+f.sum);
+    return `
     <div class="row" style="margin-bottom:8px">${Object.entries(byCur).map(([c,v])=>`<span class="tag">${fmtS(r2(v))} ${esc(curCode(c))}</span>`).join(" ")}
       <span class="muted">${list.length} записей</span><div style="flex:1"></div>
       <button class="btn sm" onclick="exportTable('factsTbl','Документы')">Выгрузить в Excel</button></div>
-    <div class="tbl-wrap"><table id="factsTbl"><thead><tr><th>Дата</th><th>Документ</th><th>Организация</th><th>Счёт или касса</th><th>Кошелёк</th><th>Тип расхода CF / вид</th><th class="num">Сумма</th><th>Вал.</th><th class="num">USD</th></tr></thead>
+    <div class="tbl-wrap"><table id="factsTbl" class="sortable"><thead><tr><th>Дата</th><th>Документ</th><th>Организация</th><th>Счёт или касса</th><th>Кошелёк</th><th>Тип расхода CF / вид</th><th class="num">Сумма</th><th>Вал.</th><th class="num">USD</th></tr></thead>
     <tbody>${list.map(f=>`<tr class="clickable" onclick="openSrc('${f.src.k}','${f.src.id}')">
       <td>${fmtD(f.date)}</td><td><a class="lnk">${esc(srcTitle(f))}</a></td><td>${esc(nm(org(f.org)))}</td><td>${esc(nm(acc(f.acc)))}</td>
       <td>${f.wallet?esc(nm(wal(f.wallet))):`<span class="tag warn">без кошелька</span>`}</td>
       <td>${f.cat==="internal"?esc(OP_KINDS[f.kind].name):f.cat==="transfer"?esc(f.op):f.cat==="opening"?"Входящий остаток":esc(refName(DB.cfTypes,f.cf))}</td>
-      <td class="num ${f.sum<0?"neg":"pos"}">${fmtS(f.sum)}</td><td>${esc(curCode(f.cur))}</td><td class="num ${f.usd<0?"neg":""}">${fmtS(f.usd)}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Нет записей</td></tr>`}</tbody></table></div>`});
+      <td class="num ${f.sum<0?"neg":"pos"}">${fmtS(f.sum)}</td><td>${esc(curCode(f.cur))}</td><td class="num ${f.usd<0?"neg":""}">${fmtS(f.usd)}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Нет записей</td></tr>`}</tbody></table></div>`; }});
 }
 function repHeader(title, tr, lede, tableId){
   return `<h1>${esc(title)} <span class="tzref">${tr}</span></h1><p class="lede">${lede}</p>`;
@@ -270,7 +271,7 @@ function viewRep40(){
     ${canEnter(me())?`<button class="btn" onclick="openContract(null)">Новый договор займа</button>`:""}
     ${exportBtn("t40","Внутренние займы")}
   </div>
-  <div class="panel"><div class="body flush"><table id="t40">
+  <div class="panel"><div class="body flush"><table id="t40" class="sortable">
     <thead><tr><th>Займодавец</th><th>Заёмщик</th><th>Договор</th><th class="num">Выдано, USD</th><th class="num">Погашено, USD</th><th class="num">Долг, USD</th></tr></thead>
     <tbody>${rows.map(r=>`<tr><td>${esc(nm(wal(r.c.lender)))}</td><td>${esc(nm(wal(r.c.borrower)))}</td>
       <td>${drillLink(()=>showOpsList(`Операции по договору «${r.c.name}»`, r.ops), esc(r.c.name))}</td>
@@ -297,11 +298,11 @@ function viewRecon(){
   ${rows.length?`<div class="summary">
     <div class="sum-item"><b>${rows.length}</b><span>счетов и касс сверено</span></div>
     <div class="sum-item"><b class="pos">${okN}</b><span>сходятся с 1С</span></div>
-    <div class="sum-item ${badN?"alarm":""}"><b class="${badN?"neg":""}">${badN}</b><span>с расхождением${badN?": "+Object.entries(badSum).map(([c,v])=>`${fmtS(r2(v))} ${esc(curCode(c))}`).join(", "):""}</span></div>
+    <div class="sum-item ${badN?"alarm":""}"><b class="${badN?"neg":""}">${badN}</b><span>с расхождением${badN?`: <span class="nowrap notr">${Object.entries(badSum).map(([c,v])=>`${fmtS(r2(v))} ${esc(curCode(c))}`).join(", ")}</span>`:""}</span></div>
   </div>`:""}
   <div class="panel"><header><div class="chips">${chip(!RF.recon.bad,"RF.recon.bad=false;render()",`Все · ${rows.length}`)}${chip(RF.recon.bad,"RF.recon.bad=true;render()",`С расхождением · ${badN}`)}</div>
     <div style="flex:1"></div>${isAdmin(u)?`<button class="btn" onclick="IMP.tab='bal';go('import')">Загрузить остатки 1С</button>`:""}${exportBtn("tRec","Сверка")}</header>
-  <div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="tRec">
+  <div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="tRec" class="sortable">
     <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th>Дата сверки</th><th class="num">Остаток в 1С</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Расхождение с</th><th></th></tr></thead>
     <tbody>${shownRows.map(r=>{ const bad = Math.abs(r.diff)>=0.005; const from = r.since || r.date;
       const lastOk = r.hist.filter(h=>h.date<from && Math.abs(h.diff)<0.005).map(h=>h.date).pop();
@@ -335,6 +336,37 @@ function viewDash(){
     [DB.bal1c.length, "Загрузить остатки счетов и касс 1С для сверки", "import", "ТР-65"],
   ];
   const done = steps.filter(s=>s[0]).length;
+  // ---- первый запуск: пока нет данных, главное на экране — пошаговая настройка
+  const noData = !list.length;
+  if(noData && A && done < steps.length){
+    const HELPS = [
+      "Выгрузите из 1С файл со справочниками: организации, банковские счета, кассы, валюты и курсы к USD. Без них нельзя создать ни один документ.",
+      "Кошельки — это «владельцы» денег внутри группы. Создайте их и выстройте иерархию: родитель включает подчинённые. Отметьте головной кошелёк.",
+      "Правила раскладывают платежи из 1С по кошелькам автоматически — по организации, счёту, подразделению, типу расхода. Что не попало под правила, окажется в «Без кошелька».",
+      "Заведите сотрудников, дайте им роли (казначей, руководитель и т.д.) и назначьте кошельки, которые они видят.",
+      "С этой даты система начинает учёт. Документы раньше неё в расчёт не попадают.",
+      "Введите, сколько денег каждого кошелька лежало на каждом счёте и в каждой кассе на дату начала учёта.",
+      "Загрузите из 1С файл расходов (СБДС и РКО) — это основной поток данных.",
+      "Загрузите остатки счетов и касс из 1С — система сверит их с суммой кошельков и покажет расхождения.",
+    ];
+    const cur = steps.findIndex(s=>!s[0]);
+    return `<h1>Сводка</h1>
+    <section class="wizard">
+      <div class="wz-head"><div><span class="wz-kicker">Настройка системы · шаг ${cur+1} из ${steps.length}</span>
+        <h2>${esc(steps[cur][1])}</h2></div>
+        <div class="progress big" aria-label="Выполнено ${done} из ${steps.length}"><i style="width:${Math.round(done/steps.length*100)}%"></i></div></div>
+      <p>${esc(HELPS[cur])} <span class="tzref">${steps[cur][3]}</span></p>
+      <div class="row"><button type="button" class="btn primary lg" onclick="go('${steps[cur][2]}')">Перейти к этому шагу</button>
+        <span class="muted">Когда шаг будет выполнен, он отметится здесь автоматически.</span></div>
+    </section>
+    <div class="panel"><header><h2>Все шаги</h2><span class="hint">${done} из ${steps.length} выполнено</span></header>
+      <div class="body"><ol class="steps">${steps.map((s,i)=>`<li class="${s[0]?"done":""} ${i===cur?"current":""}"><span class="grow">${esc(s[1])} <span class="tzref">${s[3]}</span></span>${s[0]?`<span class="muted">готово</span>`:`<button class="btn sm ${i===cur?"primary":""}" onclick="go('${s[2]}')">Открыть</button>`}</li>`).join("")}</ol></div></div>`;
+  }
+  if(noData && !A){
+    return `<h1>Сводка</h1>
+    <section class="wizard"><h2>Данных пока нет</h2>
+      <p>${visibleWallets(u).size ? "По вашим кошелькам ещё нет остатков и документов. Они появятся, когда администратор загрузит данные из 1С и введёт входящие остатки." : "Вам ещё не назначены кошельки. Обратитесь к администратору — он откроет доступ к нужным кошелькам."}</p></section>`;
+  }
   // валюты: сумма в валюте и её эквивалент в USD
   const curRows = Object.entries(bc).filter(([c,v])=>Math.abs(v)>=0.005).map(([c,v])=>{ const k = rateAt(c,CUR.date); return {c, v:r2(v), usd:k?r2(v/k):NaN}; })
     .sort((a,b)=>(b.usd||0)-(a.usd||0));
@@ -362,7 +394,7 @@ function viewDash(){
       <div class="hero-links"><a class="lnk" onclick="go('rep37')">Открыть по кошелькам</a><a class="lnk" onclick="go('rep75')">Где лежат деньги</a></div>
     </div>
     <table class="hero-cur"><thead><tr><th>Валюта</th><th class="num">Остаток</th><th class="num">В USD</th></tr></thead>
-      <tbody>${curRows.map(r=>`<tr><td>${esc(curCode(r.c))}</td><td class="num ${r.v<0?"neg":""}">${fmt(r.v)}</td><td class="num">${fmt(r.usd)}</td></tr>`).join("") || `<tr><td colspan="3">Остатков нет</td></tr>`}</tbody></table>
+      <tbody>${curRows.map(r=>`<tr><td>${esc(curCode(r.c))}</td><td class="num ${r.v<0?"neg":""}">${fmt(r.v)}</td><td class="num">${fmt(r.usd)}</td></tr>`).join("") || `<tr><td colspan="3" class="hero-empty">Остатков пока нет</td></tr>`}</tbody></table>
   </section>
   ${tot.miss.length?`<div class="alert warn">Нет курса на ${fmtD(CUR.date)} для: ${esc(tot.miss.join(", "))} — эти суммы не вошли в USD.</div>`:""}
   <div class="dash-grid">

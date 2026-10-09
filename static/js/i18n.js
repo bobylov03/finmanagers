@@ -76,5 +76,5 @@ function langSwitch(){ return `<span class="row" style="gap:2px">${["ru","en"].m
 function renderLang(){ const a = $("#langBox"); if(a) a.innerHTML = langSwitch(); const b = $("#langBoxLogin"); if(b) b.innerHTML = langSwitch();
   translateDom(document.querySelector(".brand")); document.title = LANG==="en" ? "Wallet balances" : "Остатки по кошелькам"; }
 const _alert = window.alert.bind(window), _confirm = window.confirm.bind(window);
-window.alert = m => _alert(trMsg(m)); window.confirm = m => _confirm(trMsg(m));
+window.alert = m => toast(m, {lvl:alertLevel(m)}); window.confirm = m => _confirm(trMsg(m));
 function trMsg(m){ return LANG==="ru" ? m : String(m).split("\n").map(tr).join("\n"); }

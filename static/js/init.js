@@ -8,7 +8,8 @@ async function startSession(){
   if(!(await reloadState())) return;
   SESSION = DB.me.id; VIS_CACHE = {}; LAST_REPORT_LOG = "";
   if(DB.me.lang){ LANG = DB.me.lang; document.documentElement.lang = LANG; }
-  RF.rep75.wallets = []; RF.rep38.wallets = []; VIEW = "dash"; AUD = null;
+  RF.rep75.wallets = []; RF.rep38.wallets = []; VIEW = "dash"; AUD = null; MSTACK = [];
+  applyHash();
   $("#login").classList.add("hidden");
   render();
   clearInterval(POLL);
@@ -20,7 +21,7 @@ async function startSession(){
 }
 async function logout(){
   if(SESSION) await apiRaw("/api/logout", {}).catch(()=>{});
-  SESSION = null; clearInterval(POLL); MODAL = null; renderModal(); showLogin();
+  SESSION = null; clearInterval(POLL); MODAL = null; MSTACK = []; renderModal(); showLogin();
 }
 async function showLogin(){
   SESSION = null; clearInterval(POLL);
@@ -72,10 +73,11 @@ function changeOwnPw(){
     if(a.length<8 || a!==b){ alert("Новый пароль — не короче 8 символов, оба поля должны совпадать"); return; }
     const r = await apiRaw("/api/password", {old:o, new:a});
     if(!r.ok) return showErrors(r);
-    closeModal(); alert("Пароль изменён");
+    closeModal(); toast("Пароль изменён", {lvl:"ok"});
   };
 }
 async function init(){
+  routeDefaults();
   document.documentElement.lang = LANG;
   try{ STATUS = await apiRaw("/api/status"); }catch(e){ STATUS = null; }
   if(STATUS && STATUS.ok && STATUS.user) await startSession();
@@ -83,5 +85,5 @@ async function init(){
 }
 $("#curDate").addEventListener("change", e=>setCurDate(e.target.value));
 $("#bell").addEventListener("click", e=>togglePop("bell", e));
-document.addEventListener("keydown", e=>{ if(e.key!=="Escape") return; if(CMD) closeCmd(); else if(MODAL) closeModal(); else if(POP) closePop(); });
+document.addEventListener("keydown", e=>{ if(e.key!=="Escape") return; if(CMD) closeCmd(); else if(POP) closePop(); else if(MODAL) closeModal(); });
 init();

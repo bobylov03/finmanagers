@@ -598,4 +598,4 @@ async function mutate(path, data){
   } catch(e){ return {ok:false, errors:["Нет связи с сервером: " + e.message]}; }
   finally{ busy(false); }
 }
-function showErrors(r){ if(r && !r.ok) alert(r.errors.join("\n")); }
+function showErrors(r){ if(r && !r.ok) toast(r.errors.join("\n"), {lvl:"err"}); }

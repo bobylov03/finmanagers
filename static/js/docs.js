@@ -2,7 +2,7 @@
 /* ============================================================
    12. ДОКУМЕНТЫ: СПИСОК, ПРОСМОТР, РУЧНОЙ ВВОД (раздел 3а)
    ============================================================ */
-const DF = {src:"", type:"", org:"", from:"", to:"", q:"", state:""};
+const DF = {src:"", type:"", org:"", from:"", to:"", q:"", state:"", sort:"date", dir:"desc"};
 function docVisible(d, u){
   u = u||me(); const V = visibleWallets(u); const nw = seesNoWallet(u);
   const ws = d.type==="ПЕР" ? [d.from.wallet, d.to.wallet] : d.lines.map(l=>l.wallet);
@@ -29,7 +29,10 @@ function docsFiltered(){
   if(DF.to) list = list.filter(d=>d.date<=DF.to);
   if(DF.state==="in") list = list.filter(docCounts); else if(DF.state==="out") list = list.filter(d=>!docCounts(d));
   if(DF.q){ const q = norm(DF.q); list = list.filter(d=>norm([d.no,d.no1c,d.guid,d.op,...(d.lines||[]).map(l=>l.cpty+" "+l.purpose)].join(" ")).includes(q)); }
-  list.sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
+  const key = {date:d=>d.date+"|"+(d.no1c||d.no), no:d=>String(d.no1c||d.no), org:d=>nm(org(d.type==="ПЕР"?d.from.org:d.org)).toLowerCase(),
+    sum:d=>d.type==="ПЕР"?d.from.sum:DOC_TYPES[d.type].sign*docVisTotal(d)}[DF.sort] || (d=>d.date);
+  const dir = DF.dir==="asc" ? 1 : -1;
+  list.sort((a,b)=>{ const x = key(a), y = key(b); return (typeof x==="number" ? x-y : x<y?-1:x>y?1:0) * dir; });
   return list;
 }
 function exportDocs(){
@@ -43,6 +46,15 @@ function exportDocs(){
   audit("Выгрузка в Excel", "Документы", `файл ${fname}; строк ${list.length}`);
 }
 let DF_MORE = false;
+function docSort(k){ if(DF.sort===k) DF.dir = DF.dir==="asc"?"desc":"asc"; else { DF.sort = k; DF.dir = k==="date"||k==="sum" ? "desc" : "asc"; } render(); }
+function sortTh(k, label, cls=""){ const on = DF.sort===k; return `<th class="${cls} sort-th" aria-sort="${on?(DF.dir==="asc"?"ascending":"descending"):"none"}" tabindex="0" onclick="docSort('${k}')" onkeydown="if(event.key==='Enter')docSort('${k}')">${label}</th>`; }
+const DOC_COLS = [["org","Организация и счёт"],["wallet","Кошелёк"],["cpty","Контрагент"],["state","Состояние"]];
+let DOCHIDE; try{ DOCHIDE = new Set(JSON.parse(localStorage.getItem("wallets-doccols")||'["cpty"]')); }catch(e){ DOCHIDE = new Set(["cpty"]); }
+function togDocCol(k){ DOCHIDE.has(k) ? DOCHIDE.delete(k) : DOCHIDE.add(k); try{ localStorage.setItem("wallets-doccols", JSON.stringify([...DOCHIDE])); }catch(e){} render(); }
+function colsMenu(){ const open = POP==="v:cols";
+  return `<div class="popwrap"><button type="button" class="btn" onclick="togglePop('v:cols',event)" aria-expanded="${open}">Колонки</button>
+    ${open?`<div class="pop pop-right"><div class="pop-title">Показывать колонки</div><div class="stack" style="padding:4px 12px 10px">${DOC_COLS.map(([k,t])=>`<label class="chk"><input type="checkbox" ${DOCHIDE.has(k)?"":"checked"} onchange="togDocCol('${k}')"> ${t}</label>`).join("")}</div></div>`:""}</div>`; }
+function docCpty(d){ const L = d.type==="ПЕР" ? [d.from,d.to] : d.lines.filter(l=>lineVisible(l.wallet)); return [...new Set(L.map(l=>l.cpty).filter(Boolean))].join(", "); }
 function dfCount(){ return ["type","org","from","to"].filter(k=>DF[k]).length; }
 function createMenu(){
   const id = "v:create"; const open = POP===id;
@@ -76,17 +88,17 @@ function viewDocs(){
     <label class="fld"><span>по</span><input type="date" value="${DF.to}" onchange="DF.to=this.value;render()"></label>
     ${nf?`<button type="button" class="btn ghost" onclick="Object.assign(DF,{type:'',org:'',from:'',to:''});render()">Сбросить</button>`:""}
   </div>`:""}
-  <div class="panel"><header><h2>${list.length} ${plural(list.length,"документ","документа","документов")}</h2>${list.length>DOCLIM?`<span class="hint">показаны первые ${DOCLIM}</span>`:""}<div style="flex:1"></div><button type="button" class="btn" onclick="exportDocs()">Выгрузить в Excel</button></header>
+  <div class="panel"><header><h2>${list.length} ${plural(list.length,"документ","документа","документов")}</h2>${list.length>DOCLIM?`<span class="hint">показаны первые ${DOCLIM}</span>`:""}<div style="flex:1"></div>${colsMenu()}<button type="button" class="btn" onclick="exportDocs()">Выгрузить в Excel</button></header>
   <div class="body flush"><div class="tbl-wrap"><table id="tDocs" class="list-t">
-    <thead><tr><th>Дата</th><th>Документ</th><th>Организация и счёт</th><th>Кошелёк</th><th class="num">Сумма</th><th>Состояние</th></tr></thead>
+    <thead><tr>${sortTh("date","Дата")}${sortTh("no","Документ")}${DOCHIDE.has("org")?"":sortTh("org","Организация и счёт")}${DOCHIDE.has("wallet")?"":"<th>Кошелёк</th>"}${DOCHIDE.has("cpty")?"":"<th>Контрагент</th>"}${sortTh("sum","Сумма","num")}${DOCHIDE.has("state")?"":"<th>Состояние</th>"}</tr></thead>
     <tbody>${shown.map(d=>{ const P = d.type==="ПЕР"; const sg = DOC_TYPES[d.type].sign;
       return `<tr class="clickable ${docCounts(d)?"":"excl"}" onclick="openDoc('${d.id}')"><td class="nowrap">${fmtD(d.date)}</td>
       <td><span class="dtype">${d.type}</span> <a class="lnk">${esc(d.no1c||d.no)}</a><div class="sub"><span>${esc(d.op||DOC_TYPES[d.type].name)}</span> · <span>${d.source==="file"?"файл 1С":"вручную"}</span></div></td>
-      <td>${P?`${esc(nm(org(d.from.org)))} → ${esc(nm(org(d.to.org)))}`:esc(nm(org(d.org)))}<div class="sub">${P?`${esc(nm(acc(d.from.acc)))} → ${esc(nm(acc(d.to.acc)))}`:esc(nm(acc(d.acc)))}</div></td>
-      <td>${esc(docWallets(d))}</td>
+      ${DOCHIDE.has("org")?"":`<td>${P?`${esc(nm(org(d.from.org)))} → ${esc(nm(org(d.to.org)))}`:esc(nm(org(d.org)))}<div class="sub">${P?`${esc(nm(acc(d.from.acc)))} → ${esc(nm(acc(d.to.acc)))}`:esc(nm(acc(d.acc)))}</div></td>`}
+      ${DOCHIDE.has("wallet")?"":`<td>${esc(docWallets(d))}</td>`}${DOCHIDE.has("cpty")?"":`<td>${esc(docCpty(d))}</td>`}
       <td class="num ${sg<0?"neg":sg>0?"pos":""}">${P?fmt(d.from.sum):fmtS(sg*docVisTotal(d))}<div class="sub">${P?`${esc(curCode(acc(d.from.acc)?.cur))} → ${esc(curCode(acc(d.to.acc)?.cur))}`:esc(curCode(d.cur))}</div></td>
-      <td>${docStateTag(d)}${d.type==="СБДС"&&!d.bankDone&&docCounts(d)?`<div class="sub"><span class="tag warn">не исполнен банком</span></div>`:""}</td></tr>`; }).join("")
-      || `<tr><td colspan="6" class="empty-cell">Под фильтры не попал ни один документ.${nf||DF.q||DF.state||DF.src?`<br><button type="button" class="btn sm" style="margin-top:10px" onclick="Object.assign(DF,{src:'',type:'',org:'',from:'',to:'',q:'',state:''});render()">Сбросить фильтры</button>`:""}</td></tr>`}</tbody></table></div>
+      ${DOCHIDE.has("state")?"":`<td>${docStateTag(d)}${d.type==="СБДС"&&!d.bankDone&&docCounts(d)?`<div class="sub"><span class="tag warn">не исполнен банком</span></div>`:""}</td>`}</tr>`; }).join("")
+      || `<tr><td colspan="7" class="empty-cell">Под фильтры не попал ни один документ.${nf||DF.q||DF.state||DF.src?`<br><button type="button" class="btn sm" style="margin-top:10px" onclick="Object.assign(DF,{src:'',type:'',org:'',from:'',to:'',q:'',state:''});render()">Сбросить фильтры</button>`:""}</td></tr>`}</tbody></table></div>
     ${list.length>DOCLIM?`<div class="body row"><button class="btn" onclick="DOCLIM+=500;render()">Показать ещё 500</button><button class="btn ghost" onclick="DOCLIM=1e9;render()">Показать все</button></div>`:""}</div></div>`;
 }
 function plural(n, one, few, many){ const a = Math.abs(n)%100, b = a%10; if(LANG==="en") return many; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; }
@@ -100,8 +112,39 @@ function newDoc(type){
   const side = () => ({org:"",acc:"",sum:null,wallet:null,wsrc:null,dept:"",cf:"",zone:"",cpty:"",contract:"",purpose:""});
   if(type==="ПЕР"){ Object.assign(base, {from:side(), to:side()}); base.link = {kind:"", contract:""}; }
   else { Object.assign(base, {org:"", acc:"", cur:"", lines:[{sum:null, wallet:null, wsrc:null, dept:"", cf:"", zone:"", cpty:"", contract:"", purpose:""}]}); }
+  const L = lastPick(type); const activeOrgs = DB.orgs.filter(o=>isActiveAt(o,base.date));
+  const pickSide = (S, pref, cash) => {
+    if(pref && activeOrgs.some(o=>o.id===pref.org)){ S.org = pref.org; const a = acc(pref.acc);
+      if(a && a.org===pref.org && isActiveAt(a,base.date) && (cash==null || (a.kind==="Касса")===cash)) S.acc = pref.acc; }
+    else if(activeOrgs.length===1) S.org = activeOrgs[0].id;
+    if(S.org && !S.acc){ const one = onlyAccount(S.org, cash); if(one) S.acc = one.id; } };
+  if(type==="ПЕР"){ pickSide(base.from, L&&L.from, null); ["from"].forEach(k=>{ const S = base[k]; if(S.acc){ const m = matchRule(sideCtx(S), base.date); S.wallet = m.wallet; S.wsrc = m.wallet?"rule":null; S.rule = m.rule?m.rule.id:null; } }); }
+  else { pickSide(base, L, DOC_TYPES[type].cash); if(base.acc) base.cur = acc(base.acc).cur; applyRules(base); }
+  const dr = readDraft(type); if(dr && hasContent(dr)) base._draft = dr;
   ED = base; EDerr = null; openDocModal(true);
 }
+/* --- последние выбранные организация и счёт, черновики --- */
+function lastPick(type){ try{ return JSON.parse(localStorage.getItem("wallets-last-"+type)||"null"); }catch(e){ return null; } }
+function rememberPick(d){ try{ localStorage.setItem("wallets-last-"+d.type, JSON.stringify(d.type==="ПЕР" ? {from:{org:d.from.org,acc:d.from.acc}, to:{org:d.to.org,acc:d.to.acc}} : {org:d.org, acc:d.acc})); }catch(e){} }
+function onlyAccount(orgId, cash){ const l = [...(cash!==true?DB.accounts:[]), ...(cash!==false?DB.cashboxes:[])].filter(a=>a.org===orgId && isActiveAt(a,CUR.date)); return l.length===1 ? l[0] : null; }
+const draftKey = t => "wallets-draft-" + t;
+function readDraft(t){ try{ return JSON.parse(localStorage.getItem(draftKey(t))||"null"); }catch(e){ return null; } }
+function dropDraft(t){ try{ localStorage.removeItem(draftKey(t)); }catch(e){} }
+function hasContent(d){ if(!d) return false; if(d.leg1 && !d.type) return !!(d.leg1.sum || (d.leg2&&d.leg2.sum)); if(d.type==="ПЕР") return !!(d.from && (d.from.sum || d.to.sum)); return (d.lines||[]).some(l=>l.sum>0); }
+function cleanDraft(o){ const x = JSON.parse(JSON.stringify(o)); delete x._draft; delete x._tried; delete x._fe; delete x._warnOk; x._saved = new Date().toISOString(); return x; }
+function saveDraft(){ if(!ED || ED.source!=="manual" || byId(DB.docs,ED.id) || !hasContent(ED)) return; try{ localStorage.setItem(draftKey(ED.type), JSON.stringify(cleanDraft(ED))); }catch(e){} }
+function draftBanner(obj, restore, drop){ const d = obj && obj._draft; if(!d) return "";
+  return `<div class="alert ok draft-note"><span>Есть несохранённый черновик от ${fmtDT(d._saved)}.</span> <button type="button" class="btn sm" onclick="${restore}">Восстановить</button> <button type="button" class="btn sm ghost" onclick="${drop}">Удалить черновик</button></div>`; }
+function restoreDocDraft(){ const d = ED._draft; delete d._saved; ED = Object.assign(d, {id:uid("D")}); refreshModal(); }
+/* --- ошибки у поля --- */
+function fe(k, o){ o = o||ED; const m = o && o._tried && o._fe && o._fe[k]; return m ? `<small class="ferr">${esc(String(m).replace(/^(Отправитель|Получатель|Строка \d+|Нога 1|Нога 2[^:]*|Счёт): /,""))}</small>` : ""; }
+function fi(k, o){ o = o||ED; return o && o._tried && o._fe && o._fe[k] ? "invalid" : ""; }
+function errSummary(o, all, server){
+  let h = ""; if(o._tried){ const fv = new Set(Object.values(o._fe||{})); const gen = all.filter(x=>!fv.has(x)); const nf = Object.keys(o._fe||{}).length;
+    if(nf || gen.length) h += `<div class="alert err">${nf?`<b>Проверьте отмеченные поля: ${nf}.</b>`:""}${gen.length?`<ul>${gen.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}</div>`; }
+  if(server && server.length) h += `<div class="alert err"><ul>${server.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
+  return h; }
+function focusFirstError(){ setTimeout(()=>{ const el = document.querySelector("#modalHost .invalid select, #modalHost .invalid input"); if(el){ el.focus(); el.scrollIntoView({block:"center"}); } }, 30); }
 function openDoc(id){
   const d = byId(DB.docs,id); if(!d) return;
   ED = clone(d); EDerr = null; if(ED.type==="ПЕР") ED.link = {kind:"", contract:""};
@@ -127,6 +170,9 @@ function openDocModal(isNew){
     title: `${esc(t.name)} ${ED.no1c||ED.no?`№ ${esc(ED.no1c||ED.no)}`:"(новый)"} <span class="tag">${ED.source==="file"?"из файла 1С":"ручной ввод"}</span>`,
     body: () => ED.source==="file" ? fileDocBody() : ED.type==="ПЕР" ? transferBody() : manualBody(),
     footer: docFooter,
+    submit: () => { if(ED.source==="file"){ if(fileLinesEditable()) saveFileWallets(); } else if(edEditable() && !ED.deleted) saveManual(); },
+    submitLabel: ED.source==="file" ? "сохранить кошельки" : "провести",
+    onRender: saveDraft, onChange: saveDraft,
   });
 }
 function docFooter(){
@@ -139,6 +185,7 @@ function docFooter(){
   const ed = edEditable();
   return `${orig && ed ? `<button class="btn danger" style="margin-right:auto" onclick="toggleDocDelete()">${d.deleted?"Снять пометку удаления":"Пометить на удаление"}</button>`:""}
     ${orig && d.type==="ПЕР" && needsFormalizing().some(x=>x.id===d.id) && canEnter(u) ? `<button class="btn" onclick="closeModal();formalizeDoc('${d.id}')">Оформить внутреннюю операцию</button>`:""}
+    ${ed && !orig ? `<span class="muted draft-hint">Черновик сохраняется автоматически</span>`:""}
     <button class="btn" onclick="closeModal()">${ed?"Отмена":"Закрыть"}</button>
     ${ed && !d.deleted ? `<button class="btn primary" onclick="saveManual()">Провести</button>`:""}`;
 }
@@ -196,11 +243,11 @@ async function saveFileWallets(){
   if(!changes.length){ closeModal(); return; }
   const r = await mutate(`/api/docs/${encodeURIComponent(ED.id)}/wallets`, {changes});
   if(!r.ok){ EDerr = r.errors; refreshModal(); return; }
-  closeModal();
+  closeModal(); toast("Кошельки сохранены", {lvl:"ok"});
 }
 /* --- ручной ПБДС / ПКО --- */
 function edSet(k, v){ ED[k] = v;
-  if(k==="org"){ ED.acc=""; ED.cur=""; }
+  if(k==="org"){ ED.acc=""; ED.cur=""; const one = v && onlyAccount(v, DOC_TYPES[ED.type].cash); if(one){ ED.acc = one.id; ED.cur = one.cur; } }
   if(k==="acc"){ const a = acc(v); ED.cur = a ? a.cur : ""; }
   if(["org","acc","date"].includes(k)) applyRules(ED);
   refreshModal(); }
@@ -211,14 +258,15 @@ function edLine(i, k, v){ const l = ED.lines[i]; l[k] = v;
 function manualBody(){
   const d = ED; const ed = edEditable(); const cash = DOC_TYPES[d.type].cash; const dis = ed ? "" : "disabled";
   const rate = d.cur ? rateAt(d.cur, d.date) : null;
-  return `${lockReason()}${EDerr?`<div class="alert err"><ul>${EDerr.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:""}
+  const allE = d._tried ? validateManual(d) : [];
+  return `${lockReason()}${draftBanner(d,"restoreDocDraft()","dropDraft(ED.type);ED._draft=null;refreshModal()")}${errSummary(d, allE, EDerr)}
   ${d.deleted?`<div class="alert err">Документ помечен на удаление и не участвует в расчёте.</div>`:""}
   <div class="grid2">
     <label class="fld"><span>Хозяйственная операция <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS[d.type].map(o=>`<option value="${esc(o)}" ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
-    <label class="fld"><span>Дата поступления <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="edSet('date',this.value)"></label>
-    <label class="fld"><span>Организация <em>*</em></span><select ${dis} onchange="edSet('org',this.value)">${opts(DB.orgs.filter(o=>isActiveAt(o,d.date)||o.id===d.org),d.org)}</select></label>
-    <label class="fld"><span>${cash?"Касса":"Банковский счёт"} <em>*</em></span><select ${dis} onchange="edSet('acc',this.value)">${optsAccounts(d.org,d.acc,{cash})}</select>
-      <small>Список зависит от организации (МД-05)</small></label>
+    <label class="fld ${fi("date")}"><span>Дата поступления <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="edSet('date',this.value)">${fe("date")}</label>
+    <label class="fld ${fi("org")}"><span>Организация <em>*</em></span><select ${dis} onchange="edSet('org',this.value)">${opts(DB.orgs.filter(o=>isActiveAt(o,d.date)||o.id===d.org),d.org)}</select>${fe("org")}</label>
+    <label class="fld ${fi("acc")}"><span>${cash?"Касса":"Банковский счёт"} <em>*</em></span><select ${dis} onchange="edSet('acc',this.value)">${optsAccounts(d.org,d.acc,{cash})}</select>
+      ${fe("acc")||`<small>Список зависит от организации (МД-05)</small>`}</label>
     <label class="fld"><span>Номер документа 1С, если уже есть</span><input type="text" ${dis} value="${esc(d.no1c)}" onchange="ED.no1c=this.value"></label>
     <label class="fld"><span>Дата документа 1С</span><input type="date" ${dis} value="${d.date1c||""}" onchange="ED.date1c=this.value"></label>
   </div>
@@ -226,9 +274,9 @@ function manualBody(){
   <fieldset><legend>Расшифровка — кошелёк по каждой строке</legend>
   <div class="tbl-wrap" style="max-height:none"><table><thead><tr><th style="min-width:170px">Сумма</th><th class="num">USD</th><th style="min-width:190px">Кошелёк</th><th>Подразделение</th><th>Тип расхода CF</th><th>Зона</th><th>Контрагент</th><th>Договор</th><th>Назначение</th><th></th></tr></thead>
   <tbody>${d.lines.map((l,i)=>!lineVisible(l.wallet)?"":`<tr>
-    <td>${sumWithCur(ed?moneyInput({id:`ln${i}`, value:l.sum, onchange:`edLine(${i},'sum',parseNum(this.value))`}):`<span class="num">${fmt(l.sum)}</span>`, d.cur)}</td>
+    <td class="${fi("l"+i+".sum")}">${sumWithCur(ed?moneyInput({id:`ln${i}`, value:l.sum, onchange:`edLine(${i},'sum',parseNum(this.value))`}):`<span class="num">${fmt(l.sum)}</span>`, d.cur)}${fe("l"+i+".sum")}</td>
     <td class="num muted">${l.sum>0&&rate?fmt(toUSD(l.sum,d.cur,d.date)):"—"}</td>
-    <td><select ${dis} onchange="edLine(${i},'wallet',this.value||null)">${optsWallets(l.wallet,d.date,{onlyEditable:!isAdmin(me())})}</select>
+    <td class="${fi("l"+i+".wallet")}"><select ${dis} onchange="edLine(${i},'wallet',this.value||null)">${optsWallets(l.wallet,d.date,{onlyEditable:!isAdmin(me())})}</select>${fe("l"+i+".wallet")}
       <div class="who">${l.wsrc==="rule"?`по правилу «${esc(nm(byId(DB.rules,l.rule))||"")}»`:l.wsrc==="manual"?"выбран вручную":"правило не сработало → «Без кошелька»"}</div></td>
     <td><select ${dis} onchange="edLine(${i},'dept',this.value)">${optsTreeActive(DB.depts,l.dept,d.date,"—")}</select></td>
     <td><select ${dis} onchange="edLine(${i},'cf',this.value)">${opts(activeOn(DB.cfTypes,d.date,l.cf),l.cf,{empty:"—"})}</select></td>
@@ -244,29 +292,30 @@ function manualBody(){
   </fieldset>${versionsBlock(d)}`;
 }
 function validateManual(d){
-  const e = []; const u = me();
-  const pe = periodError(d.date); if(pe) e.push(pe);
-  if(!manualAllowed(d.date)) e.push(`С ${fmtD(DB.settings.switchDate)} ручной ввод отключён (ТР-72).`);
+  const e = [], F = {}; const u = me(); const add = (k, m) => { e.push(m); if(k && !F[k]) F[k] = m; };
+  const pe = periodError(d.date); if(pe) add("date", pe);
+  if(!manualAllowed(d.date)) add("date", `С ${fmtD(DB.settings.switchDate)} ручной ввод отключён (ТР-72).`);
   if(d.type==="ПЕР"){
     [["from","Отправитель"],["to","Получатель"]].forEach(([s,t])=>{ const S = d[s];
-      if(!S.org) e.push(`${t}: не выбрана организация`); if(!S.acc) e.push(`${t}: не выбран счёт или касса`);
-      if(!(S.sum>0)) e.push(`${t}: сумма должна быть больше нуля`);
-      const a = acc(S.acc); if(a && !rateAt(a.cur,d.date)) e.push(`${t}: нет курса ${curCode(a.cur)} на ${fmtD(d.date)}`);
-      if(S.wallet && walletClosedAt(S.wallet,d.date)) e.push(`${t}: кошелёк закрыт (ТР-25)`);
-      if(S.wallet && !isAdmin(u) && !canEditWallet(u,S.wallet) && !pickableWallets(u,d.date).some(w=>w.id===S.wallet)) e.push(`${t}: кошелёк недоступен`); });
-    if(d.from.acc && d.from.acc===d.to.acc) e.push("Счёт отправителя и получателя совпадают");
+      if(!S.org) add(s+".org", `${t}: не выбрана организация`); if(!S.acc) add(s+".acc", `${t}: не выбран счёт или касса`);
+      if(!(S.sum>0)) add(s+".sum", `${t}: сумма должна быть больше нуля`);
+      const a = acc(S.acc); if(a && !rateAt(a.cur,d.date)) add(s+".acc", `${t}: нет курса ${curCode(a.cur)} на ${fmtD(d.date)}`);
+      if(S.wallet && walletClosedAt(S.wallet,d.date)) add(s+".wallet", `${t}: кошелёк закрыт (ТР-25)`);
+      if(S.wallet && !isAdmin(u) && !canEditWallet(u,S.wallet) && !pickableWallets(u,d.date).some(w=>w.id===S.wallet)) add(s+".wallet", `${t}: кошелёк недоступен`); });
+    if(d.from.acc && d.from.acc===d.to.acc) add("to.acc", "Счёт отправителя и получателя совпадают");
     const fa = acc(d.from.acc), ta = acc(d.to.acc);
-    if(fa && ta && d.op==="Конвертация валюты" && fa.cur===ta.cur) e.push("Конвертация: валюты счетов должны различаться");
-    if(fa && ta && d.op!=="Конвертация валюты" && fa.cur!==ta.cur) e.push("Переброска: валюты счетов различаются — выберите «Конвертация валюты»");
-    if(!isAdmin(u) && ![d.from.wallet,d.to.wallet].some(w=>w && canEditWallet(u,w))) e.push("Казначей вводит документы по своим кошелькам: хотя бы одна сторона должна быть вашим кошельком");
+    if(fa && ta && d.op==="Конвертация валюты" && fa.cur===ta.cur) add("", "Конвертация: валюты счетов должны различаться");
+    if(fa && ta && d.op!=="Конвертация валюты" && fa.cur!==ta.cur) add("", "Переброска: валюты счетов различаются — выберите «Конвертация валюты»");
+    if(!isAdmin(u) && ![d.from.wallet,d.to.wallet].some(w=>w && canEditWallet(u,w))) add("", "Казначей вводит документы по своим кошелькам: хотя бы одна сторона должна быть вашим кошельком");
   } else {
-    if(!d.org) e.push("Не выбрана организация"); if(!d.acc) e.push(DOC_TYPES[d.type].cash?"Не выбрана касса":"Не выбран банковский счёт");
-    if(d.acc && !rateAt(d.cur,d.date)) e.push(`Нет курса ${curCode(d.cur)} на ${fmtD(d.date)} — загрузите курсы из 1С`);
-    if(!d.lines.length) e.push("Нет строк расшифровки");
-    d.lines.forEach((l,i)=>{ if(!(l.sum>0)) e.push(`Строка ${i+1}: сумма должна быть больше нуля`);
-      if(l.wallet && walletClosedAt(l.wallet,d.date)) e.push(`Строка ${i+1}: кошелёк закрыт (ТР-25)`);
-      if(l.wallet && !canEditWallet(u,l.wallet)) e.push(`Строка ${i+1}: кошелёк «${nm(wal(l.wallet))}» не ваш`); });
+    if(!d.org) add("org", "Не выбрана организация"); if(!d.acc) add("acc", DOC_TYPES[d.type].cash?"Не выбрана касса":"Не выбран банковский счёт");
+    if(d.acc && !rateAt(d.cur,d.date)) add("acc", `Нет курса ${curCode(d.cur)} на ${fmtD(d.date)} — загрузите курсы из 1С`);
+    if(!d.lines.length) add("", "Нет строк расшифровки");
+    d.lines.forEach((l,i)=>{ if(!(l.sum>0)) add(`l${i}.sum`, `Строка ${i+1}: сумма должна быть больше нуля`);
+      if(l.wallet && walletClosedAt(l.wallet,d.date)) add(`l${i}.wallet`, `Строка ${i+1}: кошелёк закрыт (ТР-25)`);
+      if(l.wallet && !canEditWallet(u,l.wallet)) add(`l${i}.wallet`, `Строка ${i+1}: кошелёк «${nm(wal(l.wallet))}» не ваш`); });
   }
+  d._fe = F;
   return e;
 }
 /** Данные документа для сервера: только поля формы */
@@ -278,22 +327,27 @@ function manualPayload(d){
   return p;
 }
 async function saveManual(){
-  const d = ED; const errs = validateManual(d);
-  if(errs.length){ EDerr = errs; refreshModal(); return; }
+  const d = ED; d._tried = true; EDerr = null; const errs = validateManual(d);
+  if(errs.length){ refreshModal(); focusFirstError(); return; }
+  const isNew = !byId(DB.docs, d.id);
   const r = await mutate("/api/docs/manual", {doc:manualPayload(d), link:d.link||null});
   if(!r.ok){ EDerr = r.errors; refreshModal(); return; }
+  rememberPick(d); if(isNew) dropDraft(d.type);
   closeModal();
+  toast(`${isNew?"Проведён":"Сохранён"} документ ${(r.result&&r.result.no)||d.no||""}`.trim(), {lvl:"ok"});
 }
 async function toggleDocDelete(){
-  const r = await mutate(`/api/docs/${encodeURIComponent(ED.id)}/delete`);
+  const id = ED.id, was = !!ED.deleted, no = ED.no1c||ED.no;
+  const r = await mutate(`/api/docs/${encodeURIComponent(id)}/delete`);
   if(!r.ok){ EDerr = r.errors; refreshModal(); return; }
   closeModal();
+  toast(was ? `Снята пометка удаления: ${no}` : `Документ ${no} помечен на удаление`, {action: async()=>{ const x = await mutate(`/api/docs/${encodeURIComponent(id)}/delete`); x.ok ? toast("Отменено", {lvl:"ok"}) : showErrors(x); }});
 }
 /* --- конвертация / переброска одной формой с двумя сторонами (ТР-69, МД-15) --- */
 function sideCtx(S){ return {org:S.org, acc:S.acc, dept:S.dept, cf:S.cf, zone:S.zone, cpty:S.cpty}; }
 function trSet(side, k, v){
   const S = ED[side]; S[k] = v;
-  if(k==="org"){ S.acc = ""; }
+  if(k==="org"){ S.acc = ""; const one = v && onlyAccount(v, null); if(one) S.acc = one.id; }
   if(k==="wallet"){ S.wsrc = v ? "manual" : null; }
   if(k==="sum" && side==="from"){ const fa = acc(ED.from.acc), ta = acc(ED.to.acc); if(fa && ta && fa.cur===ta.cur && (ED.to.sum===null || ED.to._mirror)){ ED.to.sum = v; ED.to._mirror = true; } }
   if(k==="sum" && side==="to") ED.to._mirror = false;
@@ -319,12 +373,12 @@ function transferBody(){
   const d = ED; const ed = edEditable(); const dis = ed ? "" : "disabled";
   const side = (s, title) => { const S = d[s]; const a = acc(S.acc); const rate = a ? rateAt(a.cur,d.date) : null;
     return `<fieldset class="leg ${s==="to"?"b":""}"><legend>${title}</legend><div class="stack">
-      <label class="fld"><span>Организация <em>*</em></span><select ${dis} onchange="trSet('${s}','org',this.value)">${opts(activeOn(DB.orgs,d.date,S.org),S.org)}</select></label>
-      <label class="fld"><span>Счёт или касса <em>*</em></span><select ${dis} onchange="trSet('${s}','acc',this.value)">${optsAccounts(S.org,S.acc)}</select></label>
-      <label class="fld"><span>Сумма <em>*</em></span>${sumWithCur(ed?moneyInput({id:`tr_${s}`, value:S.sum, onchange:`trSet('${s}','sum',parseNum(this.value))`}):`<span class="num">${fmt(S.sum)}</span>`, a&&a.cur)}
-        <small>${S.sum>0&&rate?`= ${fmt(toUSD(S.sum,a.cur,d.date))} USD по курсу ${fmtRate(rate)}`:a&&!rate?`<span class="neg">нет курса на дату</span>`:""}</small></label>
-      <label class="fld"><span>Кошелёк</span><select ${dis} onchange="trSet('${s}','wallet',this.value||null)">${optsWallets(S.wallet,d.date,{empty:"— без кошелька —"})}</select>
-        <small>${S.wsrc==="rule"?`по правилу «${esc(nm(byId(DB.rules,S.rule))||"")}»`:S.wsrc==="manual"?"выбран вручную":""}</small></label>
+      <label class="fld ${fi(s+".org")}"><span>Организация <em>*</em></span><select ${dis} onchange="trSet('${s}','org',this.value)">${opts(activeOn(DB.orgs,d.date,S.org),S.org)}</select>${fe(s+".org")}</label>
+      <label class="fld ${fi(s+".acc")}"><span>Счёт или касса <em>*</em></span><select ${dis} onchange="trSet('${s}','acc',this.value)">${optsAccounts(S.org,S.acc)}</select>${fe(s+".acc")}</label>
+      <label class="fld ${fi(s+".sum")}"><span>Сумма <em>*</em></span>${sumWithCur(ed?moneyInput({id:`tr_${s}`, value:S.sum, onchange:`trSet('${s}','sum',parseNum(this.value))`}):`<span class="num">${fmt(S.sum)}</span>`, a&&a.cur)}
+        ${fe(s+".sum")||`<small>${S.sum>0&&rate?`= ${fmt(toUSD(S.sum,a.cur,d.date))} USD по курсу ${fmtRate(rate)}`:a&&!rate?`<span class="neg">нет курса на дату</span>`:""}</small>`}</label>
+      <label class="fld ${fi(s+".wallet")}"><span>Кошелёк</span><select ${dis} onchange="trSet('${s}','wallet',this.value||null)">${optsWallets(S.wallet,d.date,{empty:"— без кошелька —"})}</select>
+        ${fe(s+".wallet")||`<small>${S.wsrc==="rule"?`по правилу «${esc(nm(byId(DB.rules,S.rule))||"")}»`:S.wsrc==="manual"?"выбран вручную":""}</small>`}</label>
       <div class="grid2" style="grid-template-columns:1fr 1fr">
         <label class="fld"><span>Подразделение</span><select ${dis} onchange="trSet('${s}','dept',this.value)">${optsTreeActive(DB.depts,S.dept,d.date,"—")}</select></label>
         <label class="fld"><span>Тип расхода CF</span><select ${dis} onchange="trSet('${s}','cf',this.value)">${opts(activeOn(DB.cfTypes,d.date,S.cf),S.cf,{empty:"—"})}</select></label>
@@ -349,12 +403,13 @@ function transferBody(){
       </div>
       ${lk?`<small class="muted">Операция проведётся вместе с платежом. Деньги уже переходят этим платежом, поэтому операция не меняет остатки повторно — она фиксирует характер перевода${lk==="loan"||lk==="repay"?" и долг по займу в USD":""}.</small>`:""}
     </fieldset>` : "";
-  return `${lockReason()}${EDerr?`<div class="alert err"><ul>${EDerr.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:""}
+  const allE = d._tried ? validateManual(d) : [];
+  return `${lockReason()}${draftBanner(d,"restoreDocDraft()","dropDraft(ED.type);ED._draft=null;refreshModal()")}${errSummary(d, allE, EDerr)}
   ${d.deleted?`<div class="alert err">Документ помечен на удаление и не участвует в расчёте.</div>`:""}
   <p class="muted" style="margin-top:0">Одна операция — один ввод (ТР-69). В 1С это два документа (СБДС и ПБДС); при проведении здесь формируются две зеркальные записи: списание у отправителя и поступление у получателя.</p>
   <div class="grid2">
     <label class="fld"><span>Вид <em>*</em></span><select ${dis} onchange="edSet('op',this.value)">${MANUAL_OPS.ПЕР.map(o=>`<option value="${esc(o)}" ${o===d.op?"selected":""}>${esc(o)}</option>`).join("")}</select></label>
-    <label class="fld"><span>Дата <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="ED.date=this.value;refreshModal()"></label>
+    <label class="fld ${fi("date")}"><span>Дата <em>*</em></span><input type="date" ${dis} value="${d.date}" onchange="ED.date=this.value;refreshModal()">${fe("date")}</label>
     <label class="fld"><span>Номер документа 1С, если уже есть</span><input type="text" ${dis} value="${esc(d.no1c)}" onchange="ED.no1c=this.value"></label>
     <label class="fld"><span>Дата документа 1С</span><input type="date" ${dis} value="${d.date1c||""}" onchange="ED.date1c=this.value"></label>
   </div>
@@ -370,30 +425,60 @@ function transferBody(){
    ============================================================ */
 async function assignWallet(docId, where, wid){
   const r = await mutate(`/api/docs/${encodeURIComponent(docId)}/wallets`, {changes:[{where:String(where), wallet:wid||""}]});
-  if(!r.ok){ showErrors(r); render(); }
+  if(!r.ok){ showErrors(r); render(); } else toast(`Кошелёк «${nm(wal(wid))}» назначен`, {lvl:"ok"});
 }
 async function rulesToEmpty(){
   const r = await mutate("/api/rules/apply-empty");
   if(!r.ok) return showErrors(r);
   alert(`Заполнено строк: ${r.result}`);
 }
-function viewNoWallet(){
-  const u = me(); const rows = [];
+let NW_SEL = new Set(), NW_W = "";
+function nwRows(){
+  const rows = [];
   DB.docs.forEach(d=>{ if(!docCounts(d)) return;
-    if(d.type==="ПЕР"){ ["from","to"].forEach(s=>{ if(!d[s].wallet) rows.push({d, where:s, sum:d[s].sum*(s==="from"?-1:1), cur:acc(d[s].acc)?.cur, org:d[s].org, acc:d[s].acc, l:{}}); }); }
+    if(d.type==="ПЕР"){ ["from","to"].forEach(s=>{ if(!d[s].wallet) rows.push({d, where:s, sum:d[s].sum*(s==="from"?-1:1), cur:acc(d[s].acc)?.cur, org:d[s].org, acc:d[s].acc, l:d[s]}); }); }
     else d.lines.forEach((l,i)=>{ if(!l.wallet) rows.push({d, where:String(l.idx ?? i), sum:DOC_TYPES[d.type].sign*l.sum, cur:d.cur, org:d.org, acc:d.acc, l}); });
   });
+  rows.forEach(r=>{ r.key = r.d.id+"|"+r.where; r.locked = !!periodError(r.d.date); });
   rows.sort((a,b)=>a.d.date<b.d.date?1:-1);
+  return rows;
+}
+function nwToggle(key, on){ on ? NW_SEL.add(key) : NW_SEL.delete(key); render(); }
+function nwAll(on){ const R = nwRows().slice(0,500).filter(r=>!r.locked); NW_SEL = on ? new Set(R.map(r=>r.key)) : new Set(); render(); }
+async function nwAssign(){
+  if(!NW_W){ toast("Выберите кошелёк, который назначить", {lvl:"err"}); return; }
+  const rows = nwRows().filter(r=>NW_SEL.has(r.key)); if(!rows.length) return;
+  const byDoc = {}; rows.forEach(r=>{ (byDoc[r.d.id] = byDoc[r.d.id]||[]).push({where:String(r.where), wallet:NW_W}); });
+  busy(true); let ok = 0, bad = [];
+  try{ for(const [id, changes] of Object.entries(byDoc)){
+      const r = await apiRaw(`/api/docs/${encodeURIComponent(id)}/wallets`, {changes});
+      if(r.ok) ok += changes.length; else { const d = byId(DB.docs,id); bad.push(`${d?(d.no1c||d.no):id}: ${r.errors.join("; ")}`); } }
+    await reloadState();
+  } finally { busy(false); }
+  const w = nm(wal(NW_W)); NW_SEL = new Set(); render();
+  if(ok) toast(`Кошелёк «${w}» назначен строкам: ${ok}`, {lvl:"ok"});
+  if(bad.length) toast(`Не удалось назначить (${bad.length}):\n` + bad.slice(0,5).join("\n"), {lvl:"err"});
+}
+function viewNoWallet(){
+  const u = me(); const rows = nwRows(); const can = canEnter(u);
+  const shown = rows.slice(0,500); const keys = new Set(rows.map(r=>r.key)); NW_SEL = new Set([...NW_SEL].filter(k=>keys.has(k)));
+  const selectable = shown.filter(r=>!r.locked); const n = NW_SEL.size; const allOn = selectable.length && selectable.every(r=>NW_SEL.has(r.key));
   const byCur = {}; rows.forEach(r=>byCur[r.cur]=(byCur[r.cur]||0)+r.sum);
   return `<h1>Без кошелька <span class="tzref">ТР-23</span></h1>
-  <p class="lede">Строки, где правило автозаполнения не сработало. Они видны отдельной группой «Без кошелька» во всех отчётах и не теряются из итогов. Выберите кошелёк — изменение попадёт в версию документа и журнал аудита.</p>
-  <div class="panel"><header><h2>${rows.length} строк</h2>${Object.entries(byCur).map(([c,v])=>`<span class="tag">${fmtS(r2(v))} ${esc(curCode(c))}</span>`).join(" ")}<div style="flex:1"></div>
+  <p class="lede">Строки, где правило автозаполнения не сработало. Они видны отдельной группой «Без кошелька» во всех отчётах и не теряются из итогов. Выберите кошелёк — изменение попадёт в версию документа и журнал аудита. Можно отметить несколько строк и назначить кошелёк всем сразу.</p>
+  ${can && n ? `<div class="bulkbar" role="region" aria-label="Действия с отмеченными строками">
+    <b>Отмечено строк: ${n}</b>
+    <label class="fld"><span>Кошелёк</span><select onchange="NW_W=this.value">${optsWallets(NW_W,CUR.date,{onlyEditable:!isAdmin(u),empty:"— выберите —"})}</select></label>
+    <button type="button" class="btn primary" onclick="nwAssign()">Назначить отмеченным</button>
+    <button type="button" class="btn ghost" onclick="NW_SEL=new Set();render()">Снять отметки</button></div>` : ""}
+  <div class="panel"><header><h2>${rows.length} ${plural(rows.length,"строка","строки","строк")}</h2>${Object.entries(byCur).map(([c,v])=>`<span class="tag">${fmtS(r2(v))} ${esc(curCode(c))}</span>`).join(" ")}<div style="flex:1"></div>
     ${isAdmin(u)?`<button class="btn" onclick="rulesToEmpty()">Применить правила ко всем</button>`:""}${exportBtn("tNoW","Без кошелька")}</header>
-  <div class="body flush"><div class="tbl-wrap"><table id="tNoW"><thead><tr><th>Дата</th><th>Документ</th><th>Организация</th><th>Счёт или касса</th><th class="num">Сумма</th><th>Вал.</th><th>Подразделение</th><th>Тип расхода CF</th><th>Зона</th><th>Контрагент</th><th>Назначение</th><th style="min-width:200px">Кошелёк</th></tr></thead>
-  <tbody>${rows.slice(0,500).map(r=>{ const locked = periodError(r.d.date);
-    return `<tr><td>${fmtD(r.d.date)}</td><td><a class="lnk" onclick="openDoc('${r.d.id}')">${r.d.type} ${esc(r.d.no1c||r.d.no)}</a></td><td>${esc(nm(org(r.org)))}</td><td>${esc(nm(acc(r.acc)))}</td>
-    <td class="num ${r.sum<0?"neg":"pos"}">${fmtS(r.sum)}</td><td>${esc(curCode(r.cur))}</td><td>${esc(refName(DB.depts,r.l.dept))}</td><td>${esc(refName(DB.cfTypes,r.l.cf))}</td><td>${esc(refName(DB.zones,r.l.zone))}</td><td>${esc(r.l.cpty||"")}</td><td style="font-size:11px">${esc(r.l.purpose||"")}</td>
-    <td>${canEnter(u)&&!locked?`<select onchange="assignWallet('${r.d.id}','${r.where}',this.value)">${optsWallets(null,r.d.date,{onlyEditable:!isAdmin(u),empty:"— выбрать —"})}</select>`:`<span class="muted">${locked?"период закрыт":"—"}</span>`}</td></tr>`; }).join("") || `<tr><td colspan="12" class="muted">Все строки разнесены по кошелькам</td></tr>`}</tbody></table></div></div></div>`;
+  <div class="body flush"><div class="tbl-wrap"><table id="tNoW" class="sortable list-t"><thead><tr>${can?`<th class="nosort chkcol"><input type="checkbox" aria-label="Отметить все" ${allOn?"checked":""} onchange="nwAll(this.checked)"></th>`:""}<th>Дата</th><th>Документ</th><th>Организация и счёт</th><th class="num">Сумма</th><th>Тип расхода CF</th><th>Контрагент</th><th class="nosort" style="min-width:200px">Кошелёк</th></tr></thead>
+  <tbody>${shown.map(r=>`<tr class="${NW_SEL.has(r.key)?"sel":""}">${can?`<td class="chkcol">${r.locked?"":`<input type="checkbox" aria-label="Отметить строку" ${NW_SEL.has(r.key)?"checked":""} onchange="nwToggle('${r.key}',this.checked)">`}</td>`:""}
+    <td class="nowrap">${fmtD(r.d.date)}</td><td><a class="lnk" onclick="openDoc('${r.d.id}')">${r.d.type} ${esc(r.d.no1c||r.d.no)}</a>${r.l.purpose?`<div class="sub">${esc(r.l.purpose)}</div>`:""}</td>
+    <td>${esc(nm(org(r.org)))}<div class="sub">${esc(nm(acc(r.acc)))}${r.l.dept?` · ${esc(refName(DB.depts,r.l.dept))}`:""}</div></td>
+    <td class="num ${r.sum<0?"neg":"pos"}">${fmtS(r.sum)}<div class="sub">${esc(curCode(r.cur))}</div></td><td>${esc(refName(DB.cfTypes,r.l.cf))}</td><td>${esc(r.l.cpty||"")}</td>
+    <td>${can&&!r.locked?`<select onchange="assignWallet('${r.d.id}','${r.where}',this.value)">${optsWallets(null,r.d.date,{onlyEditable:!isAdmin(u),empty:"— выбрать —"})}</select>`:`<span class="muted">${r.locked?"период закрыт":"—"}</span>`}</td></tr>`).join("") || `<tr><td colspan="8" class="empty-cell">Все строки разнесены по кошелькам.</td></tr>`}</tbody></table></div></div></div>`;
 }
 function formalizeDoc(id){
   const d = byId(DB.docs,id); if(!d) return;
@@ -448,7 +533,7 @@ function viewOps(){
     ${canEnter(u)?`<button type="button" class="btn primary" onclick="newOp()">Новая операция</button><button type="button" class="btn" onclick="newOp({kind:'exchange'})">Обмен на двух счетах</button>`:""}
     ${exportBtn("tOps","Внутренние операции")}
   </div>
-  <div class="panel"><header><h2>${list.length} ${plural(list.length,"операция","операции","операций")}</h2></header><div class="body flush"><div class="tbl-wrap"><table id="tOps" class="list-t"><thead><tr><th>Дата</th><th>Операция</th><th>Откуда → куда</th><th>Счёт или касса</th><th class="num">Сумма</th><th class="num">USD</th><th>Состояние</th></tr></thead>
+  <div class="panel"><header><h2>${list.length} ${plural(list.length,"операция","операции","операций")}</h2></header><div class="body flush"><div class="tbl-wrap"><table id="tOps" class="list-t sortable"><thead><tr><th>Дата</th><th>Операция</th><th>Откуда → куда</th><th>Счёт или касса</th><th class="num">Сумма</th><th class="num">USD</th><th>Состояние</th></tr></thead>
   <tbody>${list.map(o=>{ const L = opLegs(o);
     return `<tr class="clickable ${opCounts(o)||(o.linkedDoc&&!o.deleted)?"":"excl"}" onclick="openOp('${o.id}')"><td class="nowrap">${fmtD(o.date)}</td>
     <td><a class="lnk">${esc(o.no||"черновик")}</a><div class="sub"><span>${esc(OP_KINDS[o.kind].name)}</span>${o.contract?` · <span>${esc(nm(contract(o.contract)))}</span>`:""}</div></td>
@@ -466,8 +551,16 @@ function newOp(pre){
     author:u.id, created:new Date().toISOString(), posted:false, deleted:false, linkedDoc:null, versions:[]}, clone(pre||{}));
   if(OE.leg1 && OE.leg1.acc && !OE.leg1.org) OE.leg1.org = acc(OE.leg1.acc)?.org || "";
   if(!isAdmin(u) && !OE.from){ const own = [...ownWallets(u)].filter(id=>!walletClosedAt(id,OE.date)); if(own.length===1) OE.from = own[0]; }
+  if(!OE.leg1.org){ const L = lastPick("op"); const activeOrgs = DB.orgs.filter(o=>isActiveAt(o,OE.date));
+    if(L && activeOrgs.some(o=>o.id===L.org)){ OE.leg1.org = L.org; const a = acc(L.acc); if(a && a.org===L.org && isActiveAt(a,OE.date)) OE.leg1.acc = L.acc; }
+    else if(activeOrgs.length===1) OE.leg1.org = activeOrgs[0].id;
+    if(OE.leg1.org && !OE.leg1.acc){ const one = onlyAccount(OE.leg1.org, null); if(one) OE.leg1.acc = one.id; }
+    const a = acc(OE.leg1.acc); if(a && !OE.leg1.rate) OE.leg1.rate = rateAt(a.cur, OE.date); }
+  if(!pre || !pre.linkedDoc){ const dr = readDraft("op"); if(dr && hasContent(dr)) OE._draft = dr; }
   OEerr = null; OEwarn = null; openOpModal();
 }
+function saveOpDraft(){ if(!OE || byId(DB.ops,OE.id) || OE.linkedDoc || !hasContent(OE)) return; try{ localStorage.setItem(draftKey("op"), JSON.stringify(cleanDraft(OE))); }catch(e){} }
+function restoreOpDraft(){ const d = OE._draft; delete d._saved; OE = Object.assign(d, {id:uid("O")}); MODAL.title = `${esc(OP_KINDS[OE.kind].name)} (новая)`; refreshModal(); }
 function openOp(id){ const o = byId(DB.ops,id); if(!o) return; OE = clone(o); OEerr=null; OEwarn=null; openOpModal(); }
 function opEditable(){
   const u = me(); const o = OE; if(!canEnter(u)) return false;
@@ -477,7 +570,8 @@ function opEditable(){
   return true;
 }
 function openOpModal(){
-  openModal({width:1080, title:`${esc(OP_KINDS[OE.kind].name)} ${OE.no?`№ ${esc(OE.no)}`:"(новая)"}`, body:opBody, footer:opFooter});
+  openModal({width:1080, title:`${esc(OP_KINDS[OE.kind].name)} ${OE.no?`№ ${esc(OE.no)}`:"(новая)"}`, body:opBody, footer:opFooter,
+    submit:()=>{ if(opEditable() && !OE.deleted) saveOp(true); }, submitLabel:"провести", onRender:saveOpDraft, onChange:saveOpDraft});
 }
 function oeSet(k, v){
   OE[k] = v;
@@ -491,7 +585,7 @@ function oeSet(k, v){
 }
 function legSet(L, k, v){
   const G = OE[L]; G[k] = v;
-  if(k==="org") G.acc = "";
+  if(k==="org"){ G.acc = ""; const one = v && onlyAccount(v, null); if(one && (!L.startsWith("leg2") || !OE.sameCur || !acc(OE.leg1.acc) || one.cur===acc(OE.leg1.acc).cur)){ G.acc = one.id; G.rate = rateAt(one.cur, OE.date); G._autoRate = true; } }
   if(k==="acc"){ const a = acc(v); G.rate = a ? rateAt(a.cur, OE.date) : null; G._autoRate = true;
     if(L==="leg1" && OE.kind==="exchange" && OE.sameCur){ const b = acc(OE.leg2.acc); if(b && a && b.cur!==a.cur){ OE.leg2.acc=""; OE.leg2.rate=null; } } }
   if(k==="rate") G._autoRate = false;
@@ -502,13 +596,13 @@ function legBlock(L, title, {curFilter=null, cls=""}={}){
   const erp = a ? rateAt(a.cur, OE.date) : null;
   return `<fieldset class="leg ${cls}"><legend>${title}</legend><div class="grid2">
     <label class="fld"><span>Организация <em>*</em></span><select ${dis} onchange="legSet('${L}','org',this.value)">${opts(DB.orgs,G.org)}</select></label>
-    <label class="fld"><span>Счёт или касса <em>*</em></span><select ${dis} onchange="legSet('${L}','acc',this.value)">${optsAccounts(G.org,G.acc,{curId:curFilter})}</select>
-      ${curFilter?`<small>Только счета в ${esc(curCode(curFilter))} — «Обмен в одной валюте» (ТР-77, МД-19)</small>`:""}</label>
-    <label class="fld"><span>Сумма <em>*</em></span>${sumWithCur(ed?moneyInput({id:`${L}_sum`, value:G.sum, onchange:`legSet('${L}','sum',parseNum(this.value))`}):`<span class="num">${fmt(G.sum)}</span>`, a&&a.cur)}</label>
-    <label class="fld"><span>Курс: ${a?esc(curCode(a.cur)):"единиц валюты"} за 1 USD <em>*</em></span>
+    <label class="fld ${fi(L+".acc",OE)}"><span>Счёт или касса <em>*</em></span><select ${dis} onchange="legSet('${L}','acc',this.value)">${optsAccounts(G.org,G.acc,{curId:curFilter})}</select>
+      ${fe(L+".acc",OE)||(curFilter?`<small>Только счета в ${esc(curCode(curFilter))} — «Обмен в одной валюте» (ТР-77, МД-19)</small>`:"")}</label>
+    <label class="fld ${fi(L+".sum",OE)}"><span>Сумма <em>*</em></span>${sumWithCur(ed?moneyInput({id:`${L}_sum`, value:G.sum, onchange:`legSet('${L}','sum',parseNum(this.value))`}):`<span class="num">${fmt(G.sum)}</span>`, a&&a.cur)}${fe(L+".sum",OE)}</label>
+    <label class="fld ${fi(L+".rate",OE)}"><span>Курс: ${a?esc(curCode(a.cur)):"единиц валюты"} за 1 USD <em>*</em></span>
       ${a && isUSD(a.cur) ? `<input type="text" readonly value="1">` : ed ? moneyInput({id:`${L}_rate`, value:G.rate, dec:6, placeholder:"3,6725", onchange:`legSet('${L}','rate',parseNum(this.value))`}) : `<span class="num">${fmtRate(G.rate)}</span>`}
       <small>${erp?`Курс ERP на ${fmtD(OE.date)}: ${fmtRate(erp)}${G.rate&&Math.abs(G.rate-erp)>1e-9?` · <a class="lnk" onclick="legSet('${L}','rate',${erp})">подставить</a>`:""}`:a?`<span class="neg">нет курса ERP на дату — введите вручную</span>`:""}
-      ${G.sum>0&&G.rate>0?` · <b>${fmt(r2(G.sum/G.rate))} USD</b>`:""}</small></label>
+      ${G.sum>0&&G.rate>0?` · <b>${fmt(r2(G.sum/G.rate))} USD</b>`:""}</small>${fe(L+".rate",OE)}</label>
   </div></fieldset>`;
 }
 function opBody(){
@@ -520,20 +614,21 @@ function opBody(){
   const linked = o.linkedDoc ? byId(DB.docs,o.linkedDoc) : null;
   const l1a = acc(o.leg1.acc);
   const reason = !canEnter(u) ? "Ваша роль — только просмотр." : periodError(o.date) || (!ed ? "Операция по чужим кошелькам — только просмотр." : "");
-  return `${reason?`<div class="alert warn">${esc(reason)}</div>`:""}
-  ${OEerr?`<div class="alert err"><ul>${OEerr.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:""}
-  ${OEwarn?`<div class="alert warn"><ul>${OEwarn.map(e=>`<li>${esc(e)}</li>`).join("")}</ul></div>`:""}
+  const allE = o._tried ? validateOp(o, o._post).e : [];
+  return `${reason?`<div class="alert warn">${esc(reason)}</div>`:""}${draftBanner(o,"restoreOpDraft()","dropDraft('op');OE._draft=null;refreshModal()")}
+  ${errSummary(o, allE, OEerr)}
+  ${OEwarn?`<div class="alert warn"><b>Проверьте перед проведением:</b><ul>${OEwarn.map(e=>`<li>${esc(e)}</li>`).join("")}</ul>Если всё верно, нажмите «Провести всё равно».</div>`:""}
   ${o.deleted?`<div class="alert err">Операция помечена на удаление и не участвует в расчёте (ТР-74).</div>`:""}
   ${linked?`<div class="alert ok">Оформляет платёж <a class="lnk" onclick="openDoc('${linked.id}')">${esc(linked.no)}</a> от ${fmtD(linked.date)} (${esc(nm(wal(linked.from.wallet)))} → ${esc(nm(wal(linked.to.wallet)))}). Деньги уже перешли этим платежом, поэтому операция не меняет остатки ещё раз — она фиксирует характер перевода и долг по займу (ТР-57).</div>`:""}
   <div class="grid2">
     <label class="fld"><span>Вид операции <em>*</em></span><select ${dis} onchange="oeSet('kind',this.value)">${Object.entries(OP_KINDS).filter(([k])=>!linked||["loan","repay","funding","dividends"].includes(k)).map(([k,t])=>`<option value="${k}" ${o.kind===k?"selected":""}>${esc(t.name)}</option>`).join("")}</select></label>
-    <label class="fld"><span>Дата <em>*</em></span><input type="date" ${dis} value="${o.date}" onchange="oeSet('date',this.value)"></label>
-    <label class="fld"><span>${esc(K.from)} <em>*</em></span><select ${dis} onchange="oeSet('from',this.value||null)">${optsWallets(o.from,o.date,{empty:"— выберите —",filter:fromFilter})}</select>
-      ${o.kind==="funding"?`<small>Только головной кошелёк</small>`:""}</label>
-    <label class="fld"><span>${esc(K.to)} <em>*</em></span><select ${dis} onchange="oeSet('to',this.value||null)">${optsWallets(o.to,o.date,{empty:"— выберите —",filter:toFilter})}</select>
-      ${o.kind==="dividends"?`<small>Только головной кошелёк</small>`:""}</label>
-    ${loan?`<label class="fld"><span>Договор займа <em>*</em></span><div class="row"><select style="flex:1" ${dis} onchange="oeSet('contract',this.value)">${opts(DB.contracts.filter(c=>o.kind==="loan"?(c.lender===o.from&&c.borrower===o.to):(c.lender===o.to&&c.borrower===o.from)),o.contract,{empty:"— выберите —"})}</select>
-      ${ed?`<button class="btn sm" onclick="openContract(null,true)">Новый</button>`:""}</div><small>Долг ведётся в USD по договору (ТР-28, ТР-40)</small></label>`:""}
+    <label class="fld ${fi("date",o)}"><span>Дата <em>*</em></span><input type="date" ${dis} value="${o.date}" onchange="oeSet('date',this.value)">${fe("date",o)}</label>
+    <label class="fld ${fi("from",o)}"><span>${esc(K.from)} <em>*</em></span><select ${dis} onchange="oeSet('from',this.value||null)">${optsWallets(o.from,o.date,{empty:"— выберите —",filter:fromFilter})}</select>
+      ${fe("from",o)||(o.kind==="funding"?`<small>Только головной кошелёк</small>`:"")}</label>
+    <label class="fld ${fi("to",o)}"><span>${esc(K.to)} <em>*</em></span><select ${dis} onchange="oeSet('to',this.value||null)">${optsWallets(o.to,o.date,{empty:"— выберите —",filter:toFilter})}</select>
+      ${fe("to",o)||(o.kind==="dividends"?`<small>Только головной кошелёк</small>`:"")}</label>
+    ${loan?`<label class="fld ${fi("contract",o)}"><span>Договор займа <em>*</em></span><div class="row"><select style="flex:1" ${dis} onchange="oeSet('contract',this.value)">${opts(DB.contracts.filter(c=>o.kind==="loan"?(c.lender===o.from&&c.borrower===o.to):(c.lender===o.to&&c.borrower===o.from)),o.contract,{empty:"— выберите —"})}</select>
+      ${ed?`<button class="btn sm" onclick="openContract(null,true)">Новый</button>`:""}</div>${fe("contract",o)||`<small>Долг ведётся в USD по договору (ТР-28, ТР-40)</small>`}</label>`:""}
     ${o.kind==="exchange"?`<label class="fld"><span>Вид обмена</span><select ${dis} onchange="OE.sameCur=this.value==='1';if(OE.sameCur){const a=acc(OE.leg1.acc),b=acc(OE.leg2.acc);if(a&&b&&a.cur!==b.cur){OE.leg2.acc='';}}refreshModal()"><option value="1" ${o.sameCur?"selected":""}>Обмен в одной валюте</option><option value="0" ${!o.sameCur?"selected":""}>Обмен в разной валюте</option></select></label>`:""}
     <label class="fld" style="grid-column:1/-1"><span>Комментарий</span><input type="text" ${dis} value="${esc(o.comment)}" onchange="OE.comment=this.value"></label>
   </div>
@@ -550,30 +645,32 @@ function opBody(){
 function opFooter(){
   const o = OE; const ed = opEditable(); const orig = byId(DB.ops,o.id);
   return `${orig && ed ? `<button class="btn danger" style="margin-right:auto" onclick="toggleOpDelete()">${o.deleted?"Снять пометку удаления":"Пометить на удаление"}</button>`:""}
+    ${ed && !orig && !o.linkedDoc ? `<span class="muted draft-hint">Черновик сохраняется автоматически</span>`:""}
     <button class="btn" onclick="closeModal()">${ed?"Отмена":"Закрыть"}</button>
-    ${ed && !o.deleted ? `${o.kind==="exchange"?`<button class="btn" onclick="saveOp(false)">Записать черновик</button>`:""}<button class="btn primary" onclick="saveOp(true)">Провести</button>`:""}`;
+    ${ed && !o.deleted ? `${o.kind==="exchange"?`<button class="btn" onclick="saveOp(false)">Записать черновик</button>`:""}<button class="btn primary" onclick="${OEwarn?"OE._warnOk=true;":""}saveOp(true)">${OEwarn?"Провести всё равно":"Провести"}</button>`:""}`;
 }
 function validateOp(o, post){
-  const e = [], w = []; const u = me(); const K = OP_KINDS[o.kind];
-  const pe = periodError(o.date); if(pe) e.push(pe);
-  if(!o.from) e.push(`Не выбран ${K.from.toLowerCase()}`); if(!o.to) e.push(`Не выбран ${K.to.toLowerCase()}`);
-  if(o.from && o.from===o.to) e.push("Отправитель и получатель совпадают");
-  if(o.from && walletClosedAt(o.from,o.date) && o.kind!=="closeDiv") e.push(`Кошелёк «${nm(wal(o.from))}» закрыт (ТР-25)`);
-  if(o.to && walletClosedAt(o.to,o.date)) e.push(`Кошелёк «${nm(wal(o.to))}» закрыт (ТР-25)`);
-  if(o.kind==="funding" && o.from && !wal(o.from).head) e.push("Безвозмездное финансирование выдаёт только головной кошелёк");
-  if(o.kind==="dividends" && o.to && !wal(o.to).head) e.push("Дивиденды получает только головной кошелёк");
-  if((o.kind==="loan"||o.kind==="repay") && !o.contract) e.push("Не выбран договор займа");
-  if(!isAdmin(u) && ![o.from,o.to].some(x=>x && canEditWallet(u,x))) e.push("Казначей вводит операции по своим кошелькам: одна из сторон должна быть вашим кошельком");
-  const chk = (G, t) => { if(!G.acc) e.push(`${t}: не выбран счёт или касса`); if(!(G.sum>0)) e.push(`${t}: сумма должна быть больше нуля`); if(!(G.rate>0)) e.push(`${t}: не указан курс к USD`); };
-  if(post || o.kind!=="exchange") chk(o.leg1, o.kind==="exchange"?"Нога 1":"Счёт");
-  if(o.kind==="exchange" && post) chk(o.leg2, "Нога 2 (документ не проводится без второй ноги)");
+  const e = [], w = [], F = {}; const u = me(); const K = OP_KINDS[o.kind]; const add = (k, m) => { e.push(m); if(k && !F[k]) F[k] = m; };
+  const pe = periodError(o.date); if(pe) add("date", pe);
+  if(!o.from) add("from", `Не выбран ${K.from.toLowerCase()}`); if(!o.to) add("to", `Не выбран ${K.to.toLowerCase()}`);
+  if(o.from && o.from===o.to) add("to", "Отправитель и получатель совпадают");
+  if(o.from && walletClosedAt(o.from,o.date) && o.kind!=="closeDiv") add("from", `Кошелёк «${nm(wal(o.from))}» закрыт (ТР-25)`);
+  if(o.to && walletClosedAt(o.to,o.date)) add("to", `Кошелёк «${nm(wal(o.to))}» закрыт (ТР-25)`);
+  if(o.kind==="funding" && o.from && !wal(o.from).head) add("from", "Безвозмездное финансирование выдаёт только головной кошелёк");
+  if(o.kind==="dividends" && o.to && !wal(o.to).head) add("to", "Дивиденды получает только головной кошелёк");
+  if((o.kind==="loan"||o.kind==="repay") && !o.contract) add("contract", "Не выбран договор займа");
+  if(!isAdmin(u) && ![o.from,o.to].some(x=>x && canEditWallet(u,x))) add("", "Казначей вводит операции по своим кошелькам: одна из сторон должна быть вашим кошельком");
+  const chk = (L, t) => { const G = o[L]; if(!G.acc) add(L+".acc", `${t}: не выбран счёт или касса`); if(!(G.sum>0)) add(L+".sum", `${t}: сумма должна быть больше нуля`); if(!(G.rate>0)) add(L+".rate", `${t}: не указан курс к USD`); };
+  if(post || o.kind!=="exchange") chk("leg1", o.kind==="exchange"?"Нога 1":"Счёт");
+  if(o.kind==="exchange" && post) chk("leg2", "Нога 2 (документ не проводится без второй ноги)");
   if(o.kind==="exchange"){ const a = acc(o.leg1.acc), b = acc(o.leg2.acc);
-    if(a && b && a.id===b.id) e.push("Ноги обмена должны быть на разных счетах");
-    if(a && b && o.sameCur && a.cur!==b.cur) e.push("Обмен в одной валюте: валюта счёта Б должна совпадать с валютой счёта А (ТР-77)"); }
+    if(a && b && a.id===b.id) add("leg2.acc", "Ноги обмена должны быть на разных счетах");
+    if(a && b && o.sameCur && a.cur!==b.cur) add("leg2.acc", "Обмен в одной валюте: валюта счёта Б должна совпадать с валютой счёта А (ТР-77)"); }
   if(!o.linkedDoc && post){ // предупреждение о минусе (разрешён, ТР-24)
     opLegs(o).forEach(L=>{ const cur = facts().filter(f=>f.wallet===L.from && f.acc===L.acc && f.date<=o.date && !(f.src.k==="op"&&f.src.id===o.id)).reduce((s,f)=>s+f.sum,0);
       if(cur - L.sum < -0.005) w.push(`У кошелька «${nm(wal(L.from))}» на счёте «${nm(acc(L.acc))}» станет отрицательный остаток: ${fmt(r2(cur-L.sum))} ${curCode(L.cur)}. Это разрешено, казначей и администратор получат уведомление (ТР-24).`); });
   }
+  o._fe = F;
   return {e, w};
 }
 function opPayload(o){
@@ -582,17 +679,22 @@ function opPayload(o){
     leg1:leg(o.leg1||{}), leg2:leg(o.leg2||{}), sameCur:!!o.sameCur, linkedDoc:o.linkedDoc||""};
 }
 async function saveOp(post){
-  const o = OE; const {e, w} = validateOp(o, post);
-  if(e.length){ OEerr = e; OEwarn = null; refreshModal(); return; }
-  if(w.length && !OEwarn){ OEwarn = w; OEerr = null; refreshModal(); if(!confirm(w.join("\n\n")+"\n\nПровести всё равно?")) return; }
+  const o = OE; o._tried = true; o._post = post; OEerr = null; const {e, w} = validateOp(o, post);
+  if(e.length){ OEwarn = null; refreshModal(); focusFirstError(); return; }
+  if(w.length && !o._warnOk){ OEwarn = w; refreshModal(); return; }
+  const isNew = !byId(DB.ops, o.id);
   const r = await mutate("/api/ops", {op:opPayload(o), post});
   if(!r.ok){ OEerr = r.errors; refreshModal(); return; }
-  closeModal();
+  if(isNew && !o.linkedDoc){ dropDraft("op"); try{ localStorage.setItem("wallets-last-op", JSON.stringify({org:o.leg1.org, acc:o.leg1.acc})); }catch(x){} }
+  OEwarn = null; closeModal();
+  toast(`Операция ${(r.result&&r.result.no)||o.no||""} ${post||o.kind!=="exchange"?"проведена":"записана как черновик"}`, {lvl:"ok"});
 }
 async function toggleOpDelete(){
-  const r = await mutate(`/api/ops/${encodeURIComponent(OE.id)}/delete`);
+  const id = OE.id, was = !!OE.deleted, no = OE.no;
+  const r = await mutate(`/api/ops/${encodeURIComponent(id)}/delete`);
   if(!r.ok){ OEerr = r.errors; refreshModal(); return; }
   closeModal();
+  toast(was ? `Снята пометка удаления: ${no}` : `Операция ${no} помечена на удаление`, {action: async()=>{ const x = await mutate(`/api/ops/${encodeURIComponent(id)}/delete`); x.ok ? toast("Отменено", {lvl:"ok"}) : showErrors(x); }});
 }
 /* --- договор займа --- */
 let CE = null;
@@ -600,7 +702,7 @@ function openContract(id, fromOp){
   const back = fromOp ? {OE:clone(OE)} : null;
   const [L,B] = fromOp ? (OE.kind==="loan"?[OE.from,OE.to]:[OE.to,OE.from]) : [null,null];
   CE = id ? clone(contract(id)) : {id:uid("C"), name:"", lender:L, borrower:B, created:new Date().toISOString()};
-  const reopen = () => { if(back){ OE = back.OE; openOpModal(); } else closeModal(); };
+  const reopen = () => { if(back){ OE = back.OE; } closeModal(); };
   openModal({title:"Договор займа между кошельками", width:640, body:()=>`<div class="stack">
     <label class="fld"><span>Наименование <em>*</em></span><input type="text" id="ceName" value="${esc(CE.name)}" onchange="CE.name=this.value"></label>
     <label class="fld"><span>Займодавец <em>*</em></span><select onchange="CE.lender=this.value">${optsWallets(CE.lender,CUR.date,{empty:"— выберите —"})}</select></label>
@@ -610,7 +712,7 @@ function openContract(id, fromOp){
   $("#ceCancel").onclick = reopen;
   $("#ceSave").onclick = async () => {
     CE.name = $("#ceName").value.trim();
-    if(!CE.name || !CE.lender || !CE.borrower || CE.lender===CE.borrower){ alert("Заполните наименование и два разных кошелька"); return; }
+    if(!CE.name || !CE.lender || !CE.borrower || CE.lender===CE.borrower){ toast("Заполните наименование и два разных кошелька", {lvl:"err"}); return; }
     const r = await mutate("/api/contracts", {name:CE.name, lender:CE.lender, borrower:CE.borrower});
     if(!r.ok) return showErrors(r);
     if(back){ back.OE.contract = r.result.id; }
