@@ -194,7 +194,7 @@ def heur_state(v):
         return None
     if "удал" in s:
         return "deleted"
-    if "насоглас" in s or "ожидает" in s or "черновик" in s:
+    if "насоглас" in s or "согласовани" in s or "ожидает" in s or "черновик" in s or "доработ" in s:
         return "pending"
     if "распровед" in s or "непровед" in s or "отклон" in s or "отмен" in s or "несоглас" in s:
         return "notposted"

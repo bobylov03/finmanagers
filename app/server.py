@@ -349,6 +349,8 @@ def create_app(db_path=None, start_scheduler=True):
     @app.post("/api/statemap")
     def statemap():
         p = body()
+        if p.get("items") is not None:
+            return act(A.save_state_values, p.get("items"))
         return act(A.save_state_value, p.get("value"), p.get("meaning"))
 
     @app.post("/api/mappings")

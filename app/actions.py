@@ -876,6 +876,16 @@ def confirm_review(C, u, doc_id):
 
 
 # ================= таблица соответствия состояний из реестра загрузки (ТР-106, ТР-109) =================
+def save_state_values(C, u, items):
+    """Несколько значений за раз — одним действием из реестра загрузки."""
+    items = [x for x in (items or []) if isinstance(x, dict) and x.get("meaning")]
+    if not items:
+        raise ApiError(["Выберите, что означает хотя бы одно значение"])
+    for x in items:
+        save_state_value(C, u, x.get("value"), x.get("meaning"))
+    return len(items)
+
+
 def save_state_value(C, u, value, meaning):
     """Загружающий задаёт значение этапа/состояния ERP прямо в реестре; попадает в таблицу ТР-106 и журнал аудита."""
     from .importer import need_upload

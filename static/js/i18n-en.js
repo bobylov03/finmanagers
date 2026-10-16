@@ -1537,3 +1537,14 @@ Object.assign(I18N, {
 "формат {0} ({1}) · {2} строка": "format {0} ({1}) · {2} row",
 "формат {0} ({1}) · {2} строки": "format {0} ({1}) · {2} rows"
 });
+Object.assign(I18N, {
+"Сопоставьте значения этапа и состояния ERP ({0}).": "Map the ERP stage and state values ({0}).",
+"Пока значение не сопоставлено, непонятно, входит ли документ в расчёт, — такие строки считаются ошибками. Сопоставление делается один раз и запоминается в таблице соответствия": "Until a value is mapped it is unclear whether the document counts — such rows are errors. Mapping is done once and remembered in the mapping table",
+"(её можно править в": "(editable in",
+"). Предвыбрано по смыслу слова — проверьте.": "). Preselected by word meaning — please check.",
+"Значение в файле": "Value in file", "Строк": "Rows", "— выберите —": "— select —",
+"Сохранить сопоставление ({0} из {1}) и проверить заново": "Save mapping ({0} of {1}) and re-check",
+"не сопоставлено:": "not mapped:",
+"В таблицу соответствия добавлено значений: {0}": "Values added to the mapping table: {0}",
+"Выберите, что означает хотя бы одно значение": "Select the meaning of at least one value"
+});

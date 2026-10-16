@@ -103,6 +103,25 @@ async function impMap(kind, raw, target){
   await reloadState(); await impPreview(); render();
   toast(`Сопоставление запомнено: «${raw}»`, {lvl:"ok"});
 }
+let STM = {};
+function stateMapBox(P){
+  const vals = P.unmapped||[]; if(!vals.length) return "";
+  const guess = {}; (P.registry||[]).forEach(r=>Object.entries(r.stateGuess||{}).forEach(([v,g])=>{ if(g && !guess[v]) guess[v] = g; }));
+  vals.forEach(v=>{ if(!(v in STM)) STM[v] = guess[v] || ""; });
+  const cnt = {}; (P.registry||[]).forEach(r=>Object.keys(r.stateGuess||{}).forEach(v=>cnt[v]=(cnt[v]||0)+1));
+  const ready = vals.filter(v=>STM[v]).length;
+  return `<div class="alert err statemap-box"><b>Сопоставьте значения этапа и состояния ERP (ТР-106).</b> Пока значение не сопоставлено, непонятно, входит ли документ в расчёт, — такие строки считаются ошибками. Сопоставление делается один раз и запоминается в таблице соответствия${isAdmin(me())?` (её можно править в <a class="lnk" onclick="go('settings')">настройках</a>)`:""}. Предвыбрано по смыслу слова — проверьте.
+    <table class="mini" style="margin-top:8px"><thead><tr><th>Значение в файле</th><th class="num">Строк</th><th>Означает</th></tr></thead><tbody>
+    ${vals.map(v=>`<tr><td class="notr"><b>${esc(v)}</b></td><td class="num">${cnt[v]||""}</td><td><select onchange="STM['${jsq(v)}']=this.value;render()"><option value="">— выберите —</option>${Object.entries(MEANING_NAMES).map(([k,t])=>`<option value="${k}" ${STM[v]===k?"selected":""}>${esc(t)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table>
+    <div class="row" style="margin-top:8px"><button class="btn primary" ${ready?"":"disabled"} onclick="impStateAll()">Сохранить сопоставление (${ready} из ${vals.length}) и проверить заново</button></div></div>`;
+}
+async function impStateAll(){
+  const items = Object.entries(STM).filter(([v,m])=>m && (IMP.pv.unmapped||[]).includes(v)).map(([value,meaning])=>({value, meaning}));
+  const r = await apiRaw("/api/statemap", {items});
+  if(!r.ok) return showErrors(r);
+  STM = {}; await reloadState(); await impPreview(); render();
+  toast(`В таблицу соответствия добавлено значений: ${items.length}`, {lvl:"ok"});
+}
 async function impState(value, meaning){
   if(!meaning) return;
   const r = await apiRaw("/api/statemap", {value, meaning});
@@ -121,9 +140,8 @@ function regCell(r, f, shown){
   let h = `<span class="${ch?"chg":""}" ${ch?`title="Было: ${esc(ch.before)}"`:""}>${shown}</span>`;
   if(r.n && (err || warn) && canUpload(me())){
     const raw = (r.raw||{})[f]||"";
-    if(f==="state"){   // ТР-106: значение этапа/состояния ERP не задано в таблице соответствия — задать прямо здесь
-      const vals = Object.keys(r.stateGuess||{});
-      h = `${shown}${vals.map(v=>`<div class="fixrow"><span class="raw notr" style="text-decoration:none;color:var(--neg)">«${esc(v)}»</span><select class="fix" title="Значение попадёт в таблицу соответствия состояний ERP (ТР-106) и применится ко всем строкам" onchange="impState('${jsq(v)}',this.value)"><option value="">— что означает? —</option>${Object.entries(MEANING_NAMES).map(([k,t])=>`<option value="${k}">${esc(t)}${r.stateGuess[v]===k?" (по смыслу слова)":""}</option>`).join("")}</select></div>`).join("")}`;
+    if(f==="state"){   // ТР-106: значения сопоставляются один раз — в панели над реестром
+      h = `<span class="neg">не сопоставлено:</span> <span class="notr">${Object.keys(r.stateGuess||{}).map(v=>`«${esc(v)}»`).join(", ")}</span>`;
     } else if(MAP_LIST[f]){ const L = f==="acc" && r.org ? MAP_LIST.acc().filter(a=>a.org===r.org) : MAP_LIST[f]();
       h = `<span class="raw notr">${esc(raw||"(пусто)")}</span><select class="fix" title="Выберите из справочника — сопоставление запомнится для следующих загрузок (ТР-109)" onchange="impMap('${f}','${jsq(raw)}',this.value)"><option value="">— выбрать из справочника —</option>${(f==="dept"?tree(L):L).map(x=>`<option value="${esc(x.id)}">${"   ".repeat(x._lvl||0)}${esc(x.name||x.code)}</option>`).join("")}</select>`;
     } else if(err){
@@ -184,8 +202,8 @@ function viewImport(){
         <label class="fld"><span>по</span><input type="date" value="${S.to}" onchange="IMP.sel.to=this.value;impPreview().then(render)"></label>
         <span class="muted" style="max-width:48ch">Документы этих организаций и дат, которых нет в файле, будут исключены — они показаны в реестре строками «Исключится». Повторная загрузка того же файла ничего не меняет.</span></div>`:""}
       ${errN && !(P.registry||[]).length?`<div class="alert err"><b>Файл не распознан:</b> ${P.errors.map(e=>esc(e.msg)).join("; ")}. Нужен лист с колонками отчёта «История согласования» (или формата ТР-61) — скачайте шаблон.</div>`:""}
-      ${errN && (P.registry||[]).length?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
-      ${(P.unmapped||[]).length?`<div class="alert err">Значения этапа или состояния ERP не заданы в таблице соответствия (ТР-106): <b class="notr">${esc(P.unmapped.join(", "))}</b>. Пока значение не сопоставлено, непонятно, входит ли документ в расчёт, поэтому такие строки — ошибки. Укажите в колонке «Состояние», что означает каждое значение, — оно запомнится в таблице соответствия${isAdmin(me())?` (её можно править в <a class="lnk" onclick="go('settings')">настройках</a>)`:""}.</div>`:""}
+      ${errN && (P.registry||[]).length && (P.registry||[]).some(r=>(r.errs||[]).some(e=>e.f!=="state"))?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
+      ${stateMapBox(P)}
       ${P.closed.length?`<div class="alert warn">Затрагивает закрытый период: ${P.closed.length} док. Изменения ERP принимаются (1С — мастер) и попадут в «Изменения в закрытом периоде» (ТР-56, ТР-89).</div>`:""}
       ${(P.significant||[]).length?`<div class="alert warn">Существенные изменения уже учтённых документов: ${P.significant.length}. После загрузки они уйдут на проверку казначею, до проверки в расчёте останется прежнее движение (ТР-85).</div>`:""}
       ${registryTable(P)}
