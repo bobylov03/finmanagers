@@ -8,7 +8,8 @@ import math
 import re
 import secrets
 
-from .logic import (DOC_TYPES, MANUAL_OPS, OP_KINDS, ROLES, RULE_FIELDS, RULE_OPS, add_version, apply_rules, balances, can_edit_wallet,
+from .logic import (DOC_TYPES, MANUAL_OPS, OP_KINDS, ROLES, RULE_FIELDS, RULE_OPS, acc_curs, add_version, apply_rules, balances, can_edit_wallet, can_review,
+                    movement_snap, doc_counts,
                     can_enter, cur_code, descendants, doc_snap, facts, has, in_closed, is_active_at, is_admin, line_visible, manual_allowed,
                     match_rule, needs_formalizing, nm, op_complete, op_legs, op_snap, own_wallets, period_error, rate_at, to_usd, wallet_closed_at,
                     diff_text, is_usd, visible_wallets)
@@ -78,7 +79,7 @@ def check_pw(u, p):
 
 
 # ================= ручные документы (ТР-68, ТР-69) =================
-SIDE_KEYS = ("org", "acc", "sum", "wallet", "wsrc", "rule", "dept", "cf", "zone", "cpty", "contract", "purpose")
+SIDE_KEYS = ("org", "acc", "cur", "sum", "wallet", "wsrc", "rule", "dept", "cf", "zone", "cpty", "contract", "purpose")
 
 
 def ed_editable(C, u, orig):
@@ -100,6 +101,8 @@ def _clean_side(C, src, errors, title):
     for k in SIDE_KEYS:
         S_[k] = src.get(k)
     S_["org"], S_["acc"] = s(S_["org"]), s(S_["acc"])
+    a = C.acc(S_["acc"])
+    S_["cur"] = s(S_["cur"]) or (acc_curs(a)[0] if a and len(acc_curs(a)) == 1 else "")
     S_["sum"] = num(S_["sum"])
     S_["wallet"] = s(S_["wallet"]) or None
     S_["wsrc"] = S_["wsrc"] if S_["wsrc"] in ("rule", "manual") else (None if not S_["wallet"] else "manual")
@@ -112,6 +115,32 @@ def _clean_side(C, src, errors, title):
     for k in ("cpty", "contract", "purpose"):
         S_[k] = s(S_[k])
     return S_
+
+
+def side_rules(C, d):
+    """ТР-111 (МД-25): правила сторон по виду операции."""
+    e = []
+    F, T = d["from"], d["to"]
+    fa, ta = C.acc(F["acc"]), C.acc(T["acc"])
+    op = d["op"]
+    same_pos = F["acc"] and F["acc"] == T["acc"] and F.get("cur") == T.get("cur")
+    if op == "Конвертация валюты":
+        if F["org"] and T["org"] and F["org"] != T["org"]: e.append("Конвертация валюты — внутри одной организации: получатель той же организации")
+        if F.get("cur") and T.get("cur") and F["cur"] == T["cur"]: e.append("Конвертация валюты: валюты сторон должны различаться")
+        if same_pos: e.append("Конвертация валюты: позиции сторон должны различаться")
+    elif op == "Перечисление на другой счёт":
+        if F["org"] and T["org"] and F["org"] != T["org"]: e.append("Перечисление на другой счёт — внутри одной организации")
+        if F.get("cur") and T.get("cur") and F["cur"] != T["cur"]: e.append("Перечисление на другой счёт — в одной валюте; для разных валют выберите «Конвертация валюты»")
+        if F["acc"] and F["acc"] == T["acc"]: e.append("Перечисление на другой счёт: счета сторон должны различаться")
+    elif op == "Инкассация":
+        if F["org"] and T["org"] and F["org"] != T["org"]: e.append("Инкассация — внутри одной организации")
+        if F.get("cur") and T.get("cur") and F["cur"] != T["cur"]: e.append("Инкассация — в одной валюте")
+        if fa and ta and (fa["kind"] == "Касса") == (ta["kind"] == "Касса"): e.append("Инкассация — между кассой и банковским счётом")
+    elif op == "Оплата в другую организацию группы":
+        if F["org"] and T["org"] and F["org"] == T["org"]: e.append("Оплата в другую организацию группы — организации сторон должны различаться")
+    if same_pos and op != "Конвертация валюты":
+        e.append("Счёт отправителя и получателя совпадают")
+    return e
 
 
 def validate_manual(C, u, d):
@@ -131,22 +160,18 @@ def validate_manual(C, u, d):
                 e.append(f"{t}: не выбран счёт или касса")
             elif a["org"] != S_["org"]:
                 e.append(f"{t}: счёт не принадлежит организации")
+            elif S_.get("cur") not in acc_curs(a):
+                e.append(f"{t}: не выбрана валюта счёта")
             if not (S_["sum"] and S_["sum"] > 0):
                 e.append(f"{t}: сумма должна быть больше нуля")
-            if a and not rate_at(C, a["cur"], d["date"]):
-                e.append(f"{t}: нет курса {cur_code(C, a['cur'])} на {fmt_d(d['date'])}")
+            if a and S_.get("cur") and not rate_at(C, S_["cur"], d["date"]):
+                e.append(f"{t}: нет курса {cur_code(C, S_['cur'])} на {fmt_d(d['date'])}")
             if S_["wallet"]:
                 if not C.get("wallets", S_["wallet"]):
                     e.append(f"{t}: кошелёк недоступен")
                 elif wallet_closed_at(C, S_["wallet"], d["date"]):
                     e.append(f"{t}: кошелёк закрыт (ТР-25)")
-        if d["from"]["acc"] and d["from"]["acc"] == d["to"]["acc"]:
-            e.append("Счёт отправителя и получателя совпадают")
-        fa, ta = C.acc(d["from"]["acc"]), C.acc(d["to"]["acc"])
-        if fa and ta and d["op"] == "Конвертация валюты" and fa["cur"] == ta["cur"]:
-            e.append("Конвертация: валюты счетов должны различаться")
-        if fa and ta and d["op"] != "Конвертация валюты" and fa["cur"] != ta["cur"]:
-            e.append("Переброска: валюты счетов различаются — выберите «Конвертация валюты»")
+        e += side_rules(C, d)
         if not is_admin(u) and not any(w and can_edit_wallet(C, u, w) for w in (d["from"]["wallet"], d["to"]["wallet"])):
             e.append("Казначей вводит документы по своим кошелькам: хотя бы одна сторона должна быть вашим кошельком")
     else:
@@ -161,8 +186,10 @@ def validate_manual(C, u, d):
                 e.append("Счёт не принадлежит организации")
             if (a["kind"] == "Касса") != cash:
                 e.append("Поступление в кассу — только по кассе, на счёт — только по банковскому счёту")
-            if not rate_at(C, a["cur"], d["date"]):
-                e.append(f"Нет курса {cur_code(C, a['cur'])} на {fmt_d(d['date'])} — загрузите курсы из 1С")
+            if d.get("cur") not in acc_curs(a):
+                e.append("Не выбрана валюта счёта")
+            elif not rate_at(C, d["cur"], d["date"]):
+                e.append(f"Нет курса {cur_code(C, d['cur'])} на {fmt_d(d['date'])} — загрузите курсы из 1С")
         if not d["lines"]:
             e.append("Нет строк расшифровки")
         for i, l in enumerate(d["lines"]):
@@ -203,11 +230,13 @@ def save_manual_doc(C, u, p):
     if typ == "ПЕР":
         d["from"] = _clean_side(C, src.get("from") or {}, errors, "Отправитель")
         d["to"] = _clean_side(C, src.get("to") or {}, errors, "Получатель")
-        d["org"], d["acc"] = d["from"]["org"], d["from"]["acc"]
-        fa = C.acc(d["acc"]); d["cur"] = fa["cur"] if fa else ""
+        if d["op"] == "Конвертация валюты" and d["from"]["org"]:
+            d["to"]["org"] = d["from"]["org"]        # ТР-111: получатель подставляется
+        d["org"], d["acc"], d["cur"] = d["from"]["org"], d["from"]["acc"], d["from"].get("cur") or ""
     else:
         d["org"], d["acc"] = s(src.get("org")), s(src.get("acc"))
-        a = C.acc(d["acc"]); d["cur"] = a["cur"] if a else ""
+        a = C.acc(d["acc"]); cs = acc_curs(a)
+        d["cur"] = s(src.get("cur")) if s(src.get("cur")) in cs else (cs[0] if len(cs) == 1 else "")
         for l in (src.get("lines") or [])[:500]:
             L = _clean_side(C, l, errors, "Строка")
             d["lines"].append({k: L[k] for k in ("sum", "wallet", "wsrc", "rule", "dept", "cf", "zone", "cpty", "contract", "purpose")} | {"usd": None, "fileWallet": None})
@@ -230,9 +259,9 @@ def save_manual_doc(C, u, p):
         raise ApiError(errors)
     if typ == "ПЕР":
         for side in ("from", "to"):
-            a = C.acc(d[side]["acc"])
-            d[side]["rate"] = rate_at(C, a["cur"], d["date"])
-            d[side]["usd"] = to_usd(C, d[side]["sum"], a["cur"], d["date"])
+            c = d[side]["cur"]
+            d[side]["rate"] = rate_at(C, c, d["date"])
+            d[side]["usd"] = to_usd(C, d[side]["sum"], c, d["date"])
     else:
         for l in d["lines"]:
             l["usd"] = to_usd(C, l["sum"], d["cur"], d["date"])
@@ -346,6 +375,8 @@ def apply_rules_to_empty(C, u):
 def validate_op(C, u, o, post):
     e = []
     K = OP_KINDS[o["kind"]]
+    if K.get("legacy"):
+        e.append("Вид «Дивиденды односторонние» убран (МД-24): перенос остатка при закрытии — обычными «Дивидендами» в головной кошелёк")
     pe = period_error(C, o["date"])
     if pe:
         e.append(pe)
@@ -385,22 +416,31 @@ def validate_op(C, u, o, post):
         chk(o["leg1"], "Нога 1" if o["kind"] == "exchange" else "Счёт")
     if o["kind"] == "exchange" and post:
         chk(o["leg2"], "Нога 2 (документ не проводится без второй ноги)")
+    for L in ("leg1", "leg2") if o["kind"] == "exchange" else ("leg1",):
+        a = C.acc(o[L].get("acc"))
+        if a and o[L].get("cur") not in acc_curs(a):
+            e.append(f"{'Нога 1' if L == 'leg1' else 'Нога 2'}: не выбрана валюта счёта")
     if o["kind"] == "exchange":
-        a, b = C.acc(o["leg1"].get("acc")), C.acc(o["leg2"].get("acc"))
-        if a and b and a["id"] == b["id"]:
-            e.append("Ноги обмена должны быть на разных счетах")
-        if a and b and o.get("sameCur") and a["cur"] != b["cur"]:
-            e.append("Обмен в одной валюте: валюта счёта Б должна совпадать с валютой счёта А (ТР-77)")
+        a, b = o["leg1"], o["leg2"]
+        if a.get("acc") and b.get("acc") and a["acc"] == b["acc"] and a.get("cur") == b.get("cur"):
+            e.append("Ноги обмена должны быть на разных позициях")
+        if o.get("sameCur") and a.get("cur") and b.get("cur") and a["cur"] != b["cur"]:
+            e.append("Обмен в одной валюте: валюта ноги 2 должна совпадать с валютой ноги 1 (ТР-77)")
+        if o.get("sameCur") and is_num(a.get("sum")) and is_num(b.get("sum")) and abs(a["sum"] - b["sum"]) >= 0.005:
+            e.append("Обмен в одной валюте: сумма ноги 2 равна сумме ноги 1 (ТР-77)")
     return e
 
 
 def _clean_leg(C, L):
     L = L or {}
     a = C.acc(s(L.get("acc")))
+    cs = acc_curs(a)
+    cur = s(L.get("cur")) if s(L.get("cur")) in cs else (cs[0] if len(cs) == 1 else "")
     rate = num(L.get("rate"))
-    if a and is_usd(C, a["cur"]):
+    if cur and is_usd(C, cur):
         rate = 1.0
-    return {"org": a["org"] if a else "", "acc": a["id"] if a else "", "sum": num(L.get("sum")), "rate": rate}
+    sm = num(L.get("sum"))
+    return {"org": a["org"] if a else "", "acc": a["id"] if a else "", "cur": cur, "sum": r2(sm) if sm is not None else None, "rate": rate}
 
 
 def op_editable(C, u, orig):
@@ -425,9 +465,19 @@ def save_op(C, u, p):
     o = {"id": orig["id"] if orig else uid("O"), "no": orig["no"] if orig else "", "date": src.get("date") if valid_iso(src.get("date")) else "",
          "kind": kind, "from": s(src.get("from")) or None, "to": s(src.get("to")) or None, "contract": s(src.get("contract")) if kind in ("loan", "repay") else "",
          "comment": s(src.get("comment")), "leg1": _clean_leg(C, src.get("leg1")),
-         "leg2": _clean_leg(C, src.get("leg2")) if kind == "exchange" else {"org": "", "acc": "", "sum": None, "rate": None},
+         "leg2": _clean_leg(C, src.get("leg2")) if kind == "exchange" else {"org": "", "acc": "", "cur": "", "sum": None, "rate": None},
          "sameCur": bool(src.get("sameCur", True)), "author": orig["author"] if orig else u["id"], "created": orig["created"] if orig else now_iso(),
          "posted": False, "deleted": False, "linkedDoc": orig.get("linkedDoc") if orig else None, "versions": orig["versions"] if orig else []}
+    if kind == "exchange":
+        if o["sameCur"] and o["leg1"]["sum"] is not None:
+            o["leg2"]["sum"] = o["leg1"]["sum"]          # ТР-77: сумма ноги 2 = сумме ноги 1, не редактируется
+        elif is_num(o["leg1"]["sum"]) and is_num(o["leg2"]["sum"]) and o["leg1"]["sum"] > 0:
+            # ТР-112: курс обмена хранится с 6 знаками; введённый пользователем курс сохраняется как есть,
+            # если суммы с ним согласованы (округляются только суммы до центов), иначе считается из сумм
+            x = num(src.get("xrate"))
+            s1, s2 = o["leg1"]["sum"], o["leg2"]["sum"]
+            o["xrate"] = round(x, 6) if x and x > 0 and abs(r2(s1 * x) - s2) <= 0.011 else round(s2 / s1, 6)
+            o["leg2"]["xrate"] = o["xrate"]
     errors = []
     ld = s(src.get("linkedDoc")) if not orig else None
     if ld:
@@ -484,7 +534,7 @@ def create_contract(C, u, p):
 
 
 # ================= входящие остатки (ТР-21, ТР-22) =================
-def save_opening(C, u, acc_id, rows):
+def save_opening(C, u, acc_id, rows, cur=None):
     need_admin(u)
     d0 = C.S["settings"].get("startDate")
     if not d0:
@@ -494,6 +544,9 @@ def save_opening(C, u, acc_id, rows):
     a = C.acc(acc_id)
     if not a:
         raise ApiError(["Счёт не найден"], 404)
+    cur = cur or (acc_curs(a)[0] if len(acc_curs(a)) == 1 else None)
+    if cur not in acc_curs(a):
+        raise ApiError(["Укажите валюту позиции"])
     clean, seen = [], set()
     for r in rows or []:
         w, sm = s(r.get("wallet")), num(r.get("sum"))
@@ -504,13 +557,14 @@ def save_opening(C, u, acc_id, rows):
         if w in seen:
             raise ApiError(["Кошелёк указан дважды"])
         seen.add(w)
-        clean.append({"id": s(r.get("id")) or uid("OB"), "acc": acc_id, "wallet": w, "sum": r2(sm)})
-    before = "; ".join(f"{nm(C.get('wallets', x['wallet']))}: {fmt(x['sum'])}" for x in C.S["opening"] if x["acc"] == acc_id)
-    for x in [x for x in C.S["opening"] if x["acc"] == acc_id]:
+        clean.append({"id": s(r.get("id")) or uid("OB"), "acc": acc_id, "cur": cur, "wallet": w, "sum": r2(sm)})
+    mine = [x for x in C.S["opening"] if x["acc"] == acc_id and (x.get("cur") or a["cur"]) == cur]
+    before = "; ".join(f"{nm(C.get('wallets', x['wallet']))}: {fmt(x['sum'])}" for x in mine)
+    for x in mine:
         C.st.delete("opening", x)
     for x in clean:
         C.st.add("opening", x)
-    C.st.audit(u, "Ввод входящих остатков", a["name"], f"было: {before or '—'}; стало: " + ("; ".join(f"{nm(C.get('wallets', x['wallet']))}: {fmt(x['sum'])}" for x in clean) or "—"))
+    C.st.audit(u, "Ввод входящих остатков", f"{a['name']} · {cur_code(C, cur)}", f"было: {before or '—'}; стало: " + ("; ".join(f"{nm(C.get('wallets', x['wallet']))}: {fmt(x['sum'])}" for x in clean) or "—"))
 
 
 # ================= кошельки =================
@@ -543,6 +597,8 @@ def save_wallet(C, u, p):
         raise ApiError(["Укажите дату закрытия"])
     if not w["closed"]:
         w["closedFrom"] = ""
+    closing = w["closed"] and not (exist and exist.get("closed"))
+    close_plan = close_plan_for(C, w, w["closedFrom"]) if closing and exist else None
     snap = lambda x: {"name": x["name"], "parent": nm(C.get("wallets", x.get("parent"))), "head": x["head"], "hidden": x["hidden"],
                       "access": [nm(C.get("users", i)) for i in x.get("access") or []], "closed": x["closed"], "closedFrom": x["closedFrom"]}
     if not exist:
@@ -553,39 +609,58 @@ def save_wallet(C, u, p):
         exist.update(w)
         C.st.save("wallets", exist)
         C.st.audit(u, "Изменение кошелька", w["name"], diff_text(before, snap(exist)))
+        if close_plan:
+            n = close_with_dividends(C, u, exist, close_plan)
+            return {"id": w["id"], "created": n}
     return {"id": w["id"]}
 
 
-def close_transfer(C, u, wid, target, closed_from):
-    """Закрытие кошелька: остаток обнуляется операциями «Дивиденды односторонние» (ТР-25)."""
-    need_admin(u)
-    w, t = C.get("wallets", wid), C.get("wallets", target)
-    if not w or not t or w["id"] == t["id"]:
-        raise ApiError(["Выберите кошелёк, куда перенести остаток"])
-    if not valid_iso(closed_from):
-        raise ApiError(["Укажите дату закрытия"])
+def close_plan_for(C, w, closed_from):
+    """ТР-25: при закрытии остаток по каждой позиции уходит «Дивидендами» в головной кошелёк; с минусом закрывать нельзя."""
     pe = period_error(C, closed_from)
     if pe:
         raise ApiError([pe])
-    if wallet_closed_at(C, t, closed_from):
-        raise ApiError(["Кошелёк закрыт (ТР-25)"])
-    w["closed"], w["closedFrom"] = True, closed_from
-    C.st.save("wallets", w)
-    bal = [(k, v) for k, v in balances(C, closed_from, [f for f in facts(C) if f["wallet"] == wid]).items() if abs(v) >= 0.005]
+    bal = [(k, v) for k, v in balances(C, closed_from, [f for f in facts(C) if f["wallet"] == w["id"]]).items() if abs(v) >= 0.005]
+    neg = [(k, v) for k, v in bal if v < 0]
+    if neg:
+        raise ApiError(["Закрытие с отрицательным остатком запрещено, пока минус не покрыт финансированием (ТР-25): "
+                        + "; ".join(f"{nm(C.acc(aid))} {fmt(v)} {cur_code(C, cur)}" for (_w, aid, cur), v in neg)])
+    if not bal:
+        return []
+    heads = [x for x in C.S["wallets"] if x.get("head") and x["id"] != w["id"] and not wallet_closed_at(C, x, closed_from)]
+    if not heads:
+        raise ApiError(["Нет действующего головного кошелька — остаток некуда перенести (ТР-25)"])
+    # ближайший головной кошелёк среди предков, иначе первый головной
+    anc = {a["id"] for a in []}
+    p_ = C.get("wallets", w.get("parent"))
+    head = None
+    while p_ and not head:
+        if p_.get("head") and p_ in heads:
+            head = p_
+        p_ = C.get("wallets", p_.get("parent"))
+    head = head or heads[0]
+    return [{"acc": aid, "cur": cur, "sum": v, "head": head["id"]} for (_w, aid, cur), v in bal]
+
+
+def close_with_dividends(C, u, w, plan):
     n = 0
-    for (_w, aid, cur), sm in bal:
-        a = C.acc(aid)
-        rate = rate_at(C, cur, closed_from) or 1.0
-        neg = sm < 0
-        o = {"id": uid("O"), "no": C.st.next_no("ВО"), "date": closed_from, "kind": "closeDiv", "from": t["id"] if neg else wid, "to": wid if neg else t["id"],
-             "contract": "", "comment": (f"Покрытие минуса при закрытии «{w['name']}»" if neg else f"Перенос остатка при закрытии «{w['name']}»"),
-             "leg1": {"org": a["org"], "acc": aid, "sum": abs(sm), "rate": rate}, "leg2": {"org": "", "acc": "", "sum": None, "rate": None}, "sameCur": True,
-             "author": u["id"], "created": now_iso(), "posted": True, "deleted": False, "linkedDoc": None, "versions": []}
+    for x in plan:
+        a = C.acc(x["acc"])
+        rate = rate_at(C, x["cur"], w["closedFrom"]) or 1.0
+        o = {"id": uid("O"), "no": C.st.next_no("ВО"), "date": w["closedFrom"], "kind": "dividends", "from": w["id"], "to": x["head"],
+             "contract": "", "comment": f"Перенос остатка при закрытии «{w['name']}» (ТР-25)",
+             "leg1": {"org": a["org"], "acc": x["acc"], "cur": x["cur"], "sum": r2(x["sum"]), "rate": rate}, "leg2": {"org": "", "acc": "", "cur": "", "sum": None, "rate": None},
+             "sameCur": True, "author": u["id"], "created": now_iso(), "posted": True, "deleted": False, "linkedDoc": None, "versions": []}
         C.st.add("ops", o)
-        C.st.audit(u, "Создание внутренней операции", f"{OP_KINDS['closeDiv']['name']} {o['no']}", diff_text({}, op_snap(C, o)))
+        C.st.audit(u, "Создание внутренней операции", f"{OP_KINDS['dividends']['name']} {o['no']}", diff_text({}, op_snap(C, o)))
         n += 1
-    C.st.audit(u, "Закрытие кошелька", w["name"], f"с {fmt_d(closed_from)}; перенесено в «{t['name']}» операций: {n}")
-    return {"created": n}
+    C.st.audit(u, "Закрытие кошелька", w["name"], f"с {fmt_d(w['closedFrom'])}; перенесено «Дивидендами» в головной кошелёк «{nm(C.get('wallets', plan[0]['head']))}» операций: {n}" if plan else f"с {fmt_d(w['closedFrom'])}; остатка нет")
+    return n
+
+
+def close_transfer(C, u, wid, target, closed_from):
+    """МД-24: «Дивиденды односторонние» убраны; закрытие — через сохранение кошелька с отметкой «Закрыт» (ТР-25)."""
+    raise ApiError(["Перенос остатка выполняется автоматически при закрытии кошелька: «Дивиденды» в головной кошелёк (ТР-25)"])
 
 
 # ================= правила автозаполнения (ТР-73) =================
@@ -616,6 +691,8 @@ def save_rule(C, u, p):
         raise ApiError(["Укажите описание"])
     if not C.get("wallets", r["wallet"]):
         raise ApiError(["Выберите целевой кошелёк"])
+    if C.get("wallets", r["wallet"]).get("closed") and r["active"] and (not ex or ex.get("wallet") != r["wallet"] or not ex.get("active")):
+        raise ApiError(["Кошелёк закрыт — его нельзя выбрать в правиле (ТР-25)"])
     snap = lambda x: {"описание": x["name"], "условия": [cond_text(C, c) for c in x["conds"]], "кошелёк": nm(C.get("wallets", x["wallet"])), "вкл": x["active"]}
     if ex:
         before = snap(ex); ex.update(r); C.st.save("rules", ex)
@@ -653,7 +730,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def user_snap(C, x):
     return {"ФИО": x["name"], "логин": x["login"], "email": x.get("email") or "", "роли": [ROLES.get(r, r) for r in x["roles"]],
-            "кошельки": [nm(C.get("wallets", w)) for w in x.get("wallets") or []], "активен": x["active"]}
+            "кошельки": [nm(C.get("wallets", w)) for w in x.get("wallets") or []], "активен": x["active"], "право загрузки": bool(x.get("canUpload"))}
 
 
 def save_user(C, u, p):
@@ -661,7 +738,8 @@ def save_user(C, u, p):
     ex = C.get("users", s(p.get("id"))) if p.get("id") else None
     nu = {"id": ex["id"] if ex else uid("U"), "name": s(p.get("name"), 200), "login": s(p.get("login"), 100), "email": s(p.get("email"), 200),
           "roles": [r for r in p.get("roles") or [] if r in ROLES], "wallets": [w for w in p.get("wallets") or [] if C.get("wallets", w)],
-          "active": bool(p.get("active", True)), "lang": ex.get("lang") if ex else "", "pw": ex.get("pw") if ex else None}
+          "active": bool(p.get("active", True)), "lang": ex.get("lang") if ex else "", "pw": ex.get("pw") if ex else None,
+          "canUpload": bool(p.get("canUpload"))}
     pw = p.get("password") or ""
     if not nu["name"] or not nu["login"]:
         raise ApiError(["Укажите ФИО и логин"])
@@ -714,7 +792,12 @@ def set_lang(C, u, lang):
 
 # ================= период и настройки =================
 SETTING_LABELS = {"startDate": "Дата начала учёта", "closedTo": "Закрытие периода", "switchDate": "Дата перехода на автообмен",
-                  "autoClose": "Автозакрытие периода", "excludedOps": "Изменение списка исключаемых операций"}
+                  "autoClose": "Автозакрытие периода", "excludedOps": "Изменение списка исключаемых операций",
+                  "stateMap": "Таблица соответствия состояний ERP (ТР-106)", "rateForm": "Форма котировки курса в отчёте ERP",
+                  "recon1c": "Сверка с остатками 1С", "holdClosed": "Удержание изменений ERP в закрытом периоде",
+                  "dbTime": "Daily Balance: контрольное время", "dbWeekends": "Daily Balance: выходные дни недели",
+                  "dbHolidays": "Daily Balance: праздничные дни", "dbWorkdays": "Daily Balance: рабочие выходные", "dbTol": "Daily Balance: допуск расхождения"}
+MEANINGS = ("pending", "approved", "posted", "notposted", "deleted")
 
 
 def set_setting(C, u, key, value):
@@ -723,15 +806,36 @@ def set_setting(C, u, key, value):
         raise ApiError(["Неизвестная настройка"])
     if key in ("startDate", "closedTo", "switchDate"):
         value = value if valid_iso(value) else ""
-    elif key == "autoClose":
+    elif key in ("autoClose", "recon1c", "holdClosed"):
         value = bool(value)
-    elif key == "excludedOps":
+    elif key in ("excludedOps",):
         value = [s(x, 200) for x in (value or []) if s(x)]
+    elif key == "stateMap":
+        value = [{"value": s(x.get("value"), 200), "meaning": x.get("meaning")} for x in (value or []) if s(x.get("value")) and x.get("meaning") in MEANINGS]
+    elif key == "rateForm":
+        if value not in ("perUsd", "usdPer"):
+            raise ApiError(["Неизвестная форма котировки"])
+    elif key == "dbTime":
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(value or "")):
+            raise ApiError(["Время в формате ЧЧ:ММ"])
+    elif key == "dbWeekends":
+        value = sorted({int(x) for x in (value or []) if str(x).isdigit() and 1 <= int(x) <= 7})
+    elif key in ("dbHolidays", "dbWorkdays"):
+        value = sorted({x for x in (value or []) if valid_iso(x)})
+    elif key == "dbTol":
+        value = {s(k, 10): abs(num(v) or 0) for k, v in (value or {}).items() if s(k)}
     before = C.S["settings"].get(key)
     if before == value:
         return
     C.st.set_setting(key, value)
-    show = lambda v: (", ".join(v) if isinstance(v, list) else ("вкл" if v is True else "выкл" if v is False else (fmt_d(v) if v else "—")))
+    def show(v):
+        if isinstance(v, list):
+            return ", ".join(f"{x['value']} → {x['meaning']}" if isinstance(x, dict) else str(x) for x in v) or "—"
+        if isinstance(v, dict):
+            return ", ".join(f"{k}: {x}" for k, x in v.items()) or "—"
+        if v is True or v is False:
+            return "вкл" if v else "выкл"
+        return (fmt_d(v) if valid_iso(v) else str(v)) if v else "—"
     C.st.audit(u, SETTING_LABELS[key], "", f"{show(before)} → {show(value)}")
 
 
@@ -751,3 +855,252 @@ def mark_closed_changes_seen(C, u):
         if u["id"] not in seen:
             c["seen"] = seen + [u["id"]]
             C.st.save("closedChanges", c)
+
+
+# ================= проверка существенных изменений (ТР-85…88) =================
+def confirm_review(C, u, doc_id):
+    d = C.get("docs", doc_id)
+    if not d or not d.get("review"):
+        raise ApiError(["Документ не требует проверки"])
+    if not can_review(C, u, d):
+        raise Forbidden("Проверяет казначей кошелька из строк документа; документ без кошелька — фин. контролер или администратор (ТР-85)")
+    held = d.get("held") or {}
+    before = {"движение": "прежнее (до проверки)", "сумма": fmt(r2(sum(l.get("sum") or 0 for l in held.get("lines") or []))), "в расчёте": bool(held.get("counted"))}
+    d["held"], rv = None, d.get("review") or {}
+    d["review"] = None
+    C.st.save("docs", d)
+    after = {"движение": "новое из ERP", "сумма": fmt(r2(sum(l.get("sum") or 0 for l in d["lines"]))), "в расчёте": doc_counts(C, d)}
+    add_version(C, "doc", d, before, after, "проверка изменений", u)
+    C.st.audit(u, "Проверка изменений документа", f"{d['type']} {d.get('no1c') or d['no']}",
+               "; ".join(f"{x.get('f')}{(' стр.' + str(x['line'])) if x.get('line') else ''}: {x.get('before')} → {x.get('after')}" for x in rv.get("diff") or []) or "подтверждено")
+
+
+# ================= таблица соответствия состояний из реестра загрузки (ТР-106, ТР-109) =================
+def save_state_value(C, u, value, meaning):
+    """Загружающий задаёт значение этапа/состояния ERP прямо в реестре; попадает в таблицу ТР-106 и журнал аудита."""
+    from .importer import need_upload
+    need_upload(u)
+    value = s(value, 200)
+    if not value or meaning not in MEANINGS:
+        raise ApiError(["Выберите, что означает значение"])
+    from .util import norm
+    before = list(C.S["settings"].get("stateMap") or [])
+    after = [x for x in before if norm(x.get("value")) != norm(value)] + [{"value": value, "meaning": meaning}]
+    C.st.set_setting("stateMap", after)
+    old = next((x["meaning"] for x in before if norm(x.get("value")) == norm(value)), None)
+    C.st.audit(u, SETTING_LABELS["stateMap"], value, f"{old or '—'} → {meaning}")
+
+
+# ================= сопоставления (ТР-109) =================
+MAP_KINDS = {"org": "orgs", "acc": "accs", "cur": "currencies", "dept": "depts", "cf": "cfTypes", "zone": "zones"}
+
+
+def save_mapping(C, u, kind, raw, target):
+    from .importer import need_upload
+    need_upload(u)
+    if kind not in MAP_KINDS:
+        raise ApiError(["Неизвестный вид сопоставления"])
+    raw = s(raw, 300)
+    if not raw:
+        raise ApiError(["Пустое значение"])
+    if target:
+        ok = C.acc(target) if kind == "acc" else C.get(MAP_KINDS[kind], target)
+        if not ok:
+            raise ApiError(["Элемент справочника не найден"])
+    from .util import norm
+    ex = next((x for x in C.S["mappings"] if x["kind"] == kind and x["rawNorm"] == norm(raw)), None)
+    before = ex["target"] if ex else ""
+    if ex and not target:
+        C.st.conn.execute("DELETE FROM mappings WHERE kind=? AND raw_norm=?", (kind, norm(raw)))
+        C.S["mappings"] = [x for x in C.S["mappings"] if x is not ex]
+    elif ex:
+        ex.update(target=target, t=now_iso(), u=u["name"]); C.st.save("mappings", ex)
+    elif target:
+        C.st.add("mappings", {"kind": kind, "rawNorm": norm(raw), "raw": raw, "target": target, "t": now_iso(), "u": u["name"]})
+    name = lambda t: nm(C.acc(t)) if kind == "acc" else nm(C.get(MAP_KINDS[kind], t)) if t else "—"
+    C.st.audit(u, "Сопоставление названия из файла", f"{kind}: «{raw}»", f"{name(before) if before else '—'} → {name(target)}")
+
+
+# ================= Daily Balance (раздел 7) =================
+def _db():
+    from . import daily
+    return daily
+
+
+def db_save_position(C, u, p):
+    need_admin(u)
+    D = _db()
+    ex = C.get("dbPositions", s(p.get("id"))) if p.get("id") else None
+    a = C.acc(s(p.get("acc")))
+    cur = s(p.get("cur"))
+    if not ex and (not a or cur not in acc_curs(a)):
+        raise ApiError(["Выберите счёт или кассу и валюту"])
+    owner = s(p.get("owner"))
+    if owner:
+        ou = C.get("users", owner)
+        if not ou or not ou.get("active") or not has(ou, "treasurer"):
+            raise ApiError(["Ответственный — активный казначей"])
+    if not ex:
+        if any(x["acc"] == a["id"] and x["cur"] == cur for x in C.S["dbPositions"]):
+            raise ApiError(["Позиция уже есть в модуле"])
+        x = {"id": uid("P"), "acc": a["id"], "cur": cur, "owner": owner, "active": bool(p.get("active", True)), "created": now_iso()}
+        C.st.add("dbPositions", x)
+        C.st.audit(u, "Daily Balance: позиция добавлена", f"{nm(a)} · {cur_code(C, cur)}", f"ответственный: {nm(C.get('users', owner)) if owner else '—'}")
+        return {"id": x["id"]}
+    before_owner, before_active = ex.get("owner"), ex.get("active")
+    ex["owner"], ex["active"] = owner, bool(p.get("active", True))
+    C.st.save("dbPositions", ex)
+    pa = C.acc(ex["acc"])
+    if before_owner != owner:
+        C.st.audit(u, "Daily Balance: смена ответственного", f"{nm(pa)} · {cur_code(C, ex['cur'])}",
+                   f"{nm(C.get('users', before_owner)) if before_owner else '—'} → {nm(C.get('users', owner)) if owner else '—'}")
+    if before_active != ex["active"]:
+        C.st.audit(u, "Daily Balance: позиция " + ("включена" if ex["active"] else "выключена"), f"{nm(pa)} · {cur_code(C, ex['cur'])}", "")
+    return {"id": ex["id"]}
+
+
+def db_add_all_positions(C, u):
+    need_admin(u)
+    have = {(x["acc"], x["cur"]) for x in C.S["dbPositions"]}
+    n = 0
+    for a in C.S["accounts"] + C.S["cashboxes"]:
+        if a.get("deactivated"):
+            continue
+        for c in acc_curs(a):
+            if (a["id"], c) not in have:
+                C.st.add("dbPositions", {"id": uid("P"), "acc": a["id"], "cur": c, "owner": "", "active": True, "created": now_iso()})
+                n += 1
+    C.st.audit(u, "Daily Balance: позиции добавлены", "", f"добавлено позиций: {n}")
+    return n
+
+
+def _db_data_clean(data):
+    out = {}
+    for pid, r in (data or {}).items():
+        if not isinstance(r, dict):
+            continue
+        b = r.get("b")
+        bnum = num(b) if b not in (None, "") else None
+        out[s(pid, 60)] = {"b": bnum, "noAccess": bool(r.get("noAccess")), "pDocs": [s(x, 60) for x in r.get("pDocs") or []],
+                           "pManual": [{"sum": num(m.get("sum")), "comment": s(m.get("comment"), 300)} for m in r.get("pManual") or [] if isinstance(m, dict)],
+                           "incoming": num(r.get("incoming")) if r.get("incoming") not in (None, "") else None, "incomingComment": s(r.get("incomingComment"), 300),
+                           "comment": s(r.get("comment"), 500), "pTouched": bool(r.get("pTouched"))}
+    return out
+
+
+def db_save_draft(C, u, d, data):
+    """ТР-93: черновик сохраняется на сервере."""
+    if not valid_iso(d):
+        raise ApiError(["Неверная дата"])
+    D = _db()
+    if not D.my_positions(C, u):
+        raise Forbidden("Вы не ответственный ни за одну позицию Daily Balance")
+    key = f"{u['id']}|{d}"
+    ex = C.get("dbDrafts", key)
+    rec = {"id": key, "user": u["id"], "date": d, "data": _db_data_clean(data), "updated": now_iso()}
+    if ex:
+        ex.update(rec); C.st.save("dbDrafts", ex)
+    else:
+        C.st.add("dbDrafts", rec)
+    return {"updated": rec["updated"]}
+
+
+def db_submit(C, u, d, data):
+    """ТР-93…96: сдача = фиксация; один утренний отчёт на казначея в день."""
+    D = _db()
+    if not valid_iso(d):
+        raise ApiError(["Неверная дата"])
+    if not D.is_workday(C, d):
+        raise ApiError(["Отчёт сдаётся только в рабочие дни (ТР-94)"])
+    if d > D.today_local(C):
+        raise ApiError(["Нельзя сдать отчёт за будущий день"])
+    mine = D.my_positions(C, u)
+    if not mine:
+        raise Forbidden("Вы не ответственный ни за одну позицию Daily Balance")
+    if D.reports_of(C, d, u["id"], "morning"):
+        raise ApiError([f"Утренний отчёт за {fmt_d(d)} уже сдан. Обновить остаток по позиции можно кнопкой «Обновить остаток» (ТР-97)"])
+    data = _db_data_clean(data)
+    errs = []
+    rows = []
+    for pos in mine:
+        r = data.get(pos["id"]) or {}
+        a = C.acc(pos["acc"])
+        if not r.get("noAccess") and r.get("b") is None:
+            errs.append(f"{nm(a)} · {cur_code(C, pos['cur'])}: введите остаток по банку (ноль — явно) или отметьте «Нет доступа к банку»")
+            continue
+        rows.append(D.build_row(C, u, pos, d, r))
+    if errs:
+        raise ApiError(errs)
+    t = D.now_local(C)
+    rep = {"id": None, "kind": "morning", "date": d, "user": u["id"], "uname": u["name"], "t": t.isoformat(timespec="seconds"), "late": D.is_late(C, d, t), "rows": rows}
+    C.st.add("dbReports", rep)
+    dr = C.get("dbDrafts", f"{u['id']}|{d}")
+    if dr:
+        C.st.conn.execute("DELETE FROM db_drafts WHERE id=?", (dr["id"],))
+        C.S["dbDrafts"] = [x for x in C.S["dbDrafts"] if x is not dr]
+    C.st.audit(u, "Daily Balance: сдача отчёта", f"за {fmt_d(d)}" + (" (с опозданием)" if rep["late"] else ""),
+               "; ".join(f"{nm(C.acc(r['acc']))} {cur_code(C, r['cur'])}: Б {'нет доступа' if r['noAccess'] else fmt(r['b'])}, П {fmt(r['p'])}, К {fmt(r['k'])}"
+                         + (f", расхождение {fmt(r['diff'])}" if r.get("diff") is not None else "") for r in rows))
+    return {"id": rep["id"], "late": rep["late"]}
+
+
+def db_update(C, u, pid, data):
+    """ТР-97: обновление днём — новая неизменяемая запись со временем; утренний отчёт не меняется."""
+    D = _db()
+    pos = D.pos_get(C, s(pid))
+    if not pos or pos.get("owner") != u["id"]:
+        raise Forbidden("Обновлять остаток может ответственный за позицию")
+    d = D.today_local(C)
+    if not D.reports_of(C, d, u["id"], "morning"):
+        raise ApiError(["Сначала сдайте утренний отчёт за сегодня (ТР-97)"])
+    r = _db_data_clean({pos["id"]: data}).get(pos["id"]) or {}
+    if r.get("b") is None:
+        raise ApiError(["Введите остаток по банку"])
+    r["noAccess"] = False
+    row = D.build_row(C, u, pos, d, r)
+    t = D.now_local(C)
+    rep = {"id": None, "kind": "update", "date": d, "user": u["id"], "uname": u["name"], "t": t.isoformat(timespec="seconds"), "late": False, "rows": [row]}
+    C.st.add("dbReports", rep)
+    C.st.audit(u, "Daily Balance: обновление остатка", f"{nm(C.acc(pos['acc']))} · {cur_code(C, pos['cur'])}", f"{fmt_d(d)} {t.strftime('%H:%M')}: Б {fmt(row['b'])}")
+    return {"id": rep["id"]}
+
+
+def db_correct(C, u, report_id, pid, field, value, reason):
+    """ТР-98: корректировка — исходное остаётся, новое рядом с причиной; фин. контролер и администратор; только открытый период."""
+    D = _db()
+    if not (is_admin(u) or has(u, "finControl")):
+        raise Forbidden("Корректировка — фин. контролер и администратор (ТР-98)")
+    rep = next((r for r in C.S["dbReports"] if r["id"] == report_id), None)
+    if not rep or not any(x["pos"] == pid for x in rep["rows"]):
+        raise ApiError(["Строка отчёта не найдена"])
+    if in_closed(C, rep["date"]):
+        raise ApiError([f"Период по {fmt_d(C.S['settings']['closedTo'])} закрыт — корректировать Daily Balance нельзя (ТР-55)"])
+    if field not in ("b", "p"):
+        raise ApiError(["Корректируется остаток по банку или исходящие в пути"])
+    v = num(value)
+    if v is None:
+        raise ApiError(["Введите число"])
+    reason = s(reason, 500)
+    if not reason:
+        raise ApiError(["Укажите причину корректировки"])
+    row = next(x for x in rep["rows"] if x["pos"] == pid)
+    prev = D.effective(C, row, pid, rep["date"])[0 if field == "b" else 1]
+    C.st.add("dbCorr", {"id": None, "report": report_id, "pos": pid, "date": rep["date"], "field": field, "value": r2(v), "reason": reason,
+                        "user": u["id"], "uname": u["name"], "t": now_iso()})
+    C.st.audit(u, "Daily Balance: корректировка", f"{nm(C.acc(row['acc']))} · {cur_code(C, row['cur'])} за {fmt_d(rep['date'])}",
+               f"{'Б' if field == 'b' else 'П'}: {fmt(prev)} → {fmt(v)}; причина: {reason}")
+
+
+def db_explain(C, u, pid, d, comment):
+    """ТР-100: статус «Объяснено» ставит фин. контролер (и администратор)."""
+    D = _db()
+    if not (is_admin(u) or has(u, "finControl")):
+        raise Forbidden("«Объяснено» ставит фин. контролер (ТР-100)")
+    pos = D.pos_get(C, s(pid))
+    if not pos or not valid_iso(d):
+        raise ApiError(["Позиция не найдена"])
+    comment = s(comment, 500)
+    if not comment:
+        raise ApiError(["Опишите причину расхождения"])
+    C.st.add("dbExpl", {"id": None, "pos": pos["id"], "date": d, "comment": comment, "user": u["id"], "uname": u["name"], "t": now_iso()})
+    C.st.audit(u, "Daily Balance: «Объяснено»", f"{nm(C.acc(pos['acc']))} · {cur_code(C, pos['cur'])} за {fmt_d(d)}", comment)

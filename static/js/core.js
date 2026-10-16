@@ -224,6 +224,7 @@ const ROLES = {
   fcHead:  "Руководитель финцентра",
   treasurer:"Казначей",
   deptHead:"Руководитель отдела",
+  finControl:"Фин. контролер",
   admin:   "Администратор",
 };
 const OP_KINDS = {
@@ -231,7 +232,8 @@ const OP_KINDS = {
   repay:      {name:"Погашение займа",              from:"Кошелёк-заёмщик",    to:"Кошелёк-займодавец", debt:-1},
   funding:    {name:"Безвозмездное финансирование", from:"Головной кошелёк",   to:"Кошелёк"},
   dividends:  {name:"Дивиденды",                    from:"Кошелёк",            to:"Головной кошелёк"},
-  closeDiv:   {name:"Дивиденды односторонние (перенос остатка при закрытии)", from:"Закрываемый кошелёк", to:"Выбранный кошелёк"},
+  // МД-24: вид убран, остаётся только для показа старых операций
+  closeDiv:   {name:"Дивиденды односторонние (устаревший вид)", from:"Закрываемый кошелёк", to:"Выбранный кошелёк", legacy:true},
   exchange:   {name:"Обмен между кошельками на двух счетах", from:"Кошелёк X", to:"Кошелёк Y"},
 };
 const DOC_TYPES = {
@@ -349,7 +351,12 @@ function pickableWallets(u, date, {all=false}={}){
   u = u || me();
   return DB.wallets.filter(w => !walletClosedAt(w,date) && (isAdmin(u) || hiddenAllowed(u,w)) && (all || true));
 }
-const seesNoWallet = u => isAdmin(u) || has(u,"owner") || has(u,"treasurer");
+const seesNoWallet = u => isAdmin(u) || has(u,"owner") || has(u,"treasurer") || has(u,"finControl");
+/** Валюты счёта или кассы: у мультивалютного счёта каждая валюта — отдельная позиция */
+function accCurs(a){ a = typeof a==="string" ? acc(a) : a; if(!a) return []; return (a.curs && a.curs.length) ? a.curs : (a.cur ? [a.cur] : []); }
+function allPositions(){ const out = []; [...DB.accounts,...DB.cashboxes].forEach(a=>accCurs(a).forEach(c=>out.push({acc:a.id, cur:c, a}))); return out; }
+const posLabel = (accId, cur) => `${nm(acc(accId))} · ${curCode(cur)}`;
+const canUpload = u => isAdmin(u) || (has(u,"treasurer") && (DB.perms ? DB.perms.canUpload : u.canUpload));
 /** Может вводить/править по кошельку (ТР, раздел 8: казначей — по своим кошелькам) */
 function canEditWallet(u, wid){ if(DB.perms && u.id===DB.me.id) return DB.perms.editable.includes(wid); return isAdmin(u) || (has(u,"treasurer") && ownWallets(u).has(wid)); }
 const canEnter = u => isAdmin(u) || has(u,"treasurer");
@@ -359,7 +366,7 @@ function roleNames(u){ return u.roles.map(r=>ROLES[r]||r).join(", "); }
 function inClosed(date){ return !!(DB.settings.closedTo && date && date <= DB.settings.closedTo); }
 /** День, по которому сверка с 1С прошла без расхождений — правка запрещена */
 /** День, по которому сверка с 1С прошла без расхождений — правка запрещена (считает сервер) */
-function reconciledDay(date){ return (DB.reconciledDays||[]).includes(date); }
+function reconciledDay(date){ return !!DB.settings.recon1c && (DB.reconciledDays||[]).includes(date); }
 function periodError(date){
   if(!date) return "Не указана дата";
   if(inClosed(date)) return `Период по ${fmtD(DB.settings.closedTo)} закрыт (ТР-55). Исправления вносятся новой операцией в открытом периоде.`;
@@ -431,28 +438,42 @@ let VF_CACHE = {}, NF_CACHE = {};
 function inval(){ FACTS = null; RATE_IDX = null; VIS_CACHE = {}; RECON = null; VF_CACHE = {}; NF_CACHE = {}; }
 
 /** Участвует ли документ в расчёте (ТР-07, ТР-08, ТР-72, ТР-74) */
+/* ТР-107: у документа ровно одно состояние; при нескольких основаниях берётся строка выше */
+const STATE_NAMES = {deleted:"Помечен на удаление", excluded:"Исключён", notposted:"Не проведён", posted:"Проведён"};
+function docState(d){
+  if(d.deleted || d.status==="Помечен на удаление") return "deleted";
+  if(d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate) return "deleted";   // ТР-72; «Исключён» — только отсутствие в файле
+  if(d.excluded) return "excluded";
+  if(d.status!=="Проведён" || (d.type==="СБДС" && d.approved===false)) return "notposted";
+  return "posted";
+}
 function docCounts(d){
-  if(d.excluded || d.deleted) return false;
-  if(d.status !== "Проведён") return false;
-  if(d.type==="СБДС" && d.approved===false) return false;
+  if(docState(d)!=="posted") return false;
   if(DB.settings.startDate && d.date < DB.settings.startDate) return false;
-  if(d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate) return false;
   return true;
 }
+/** Метка «Не исполнен банком»: только проведённый СБДС без даты проведения банком (ТР-09, ТР-107) */
+const notBankDone = d => d.type==="СБДС" && docState(d)==="posted" && !d.bankDate;
+const needsReview = d => !!d.review;
+/** Что считать в расчёте: удержанное прежнее движение до проверки казначеем (ТР-85) или текущее */
+function docMovement(d){ if(d.held) return [Object.assign({}, d, d.held, {id:d.id, type:d.type}), !!d.held.counted]; return [d, docCounts(d)]; }
 function docStateTag(d){
-  if(d.excluded) return `<span class="tag off">исключён</span>`;
-  if(d.deleted) return `<span class="tag off">помечен на удаление</span>`;
-  if(d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate) return `<span class="tag off">заменён данными 1С (ТР-72)</span>`;
-  if(DB.settings.startDate && d.date < DB.settings.startDate) return `<span class="tag warn">до начала учёта</span>`;
-  if(d.status!=="Проведён") return `<span class="tag warn">${esc(d.status)}</span>`;
-  if(d.type==="СБДС" && d.approved===false) return `<span class="tag warn">не прошёл согласование</span>`;
-  return `<span class="tag ok">в расчёте</span>`;
+  const st = docState(d);
+  const why = d.excluded ? "нет в последней загрузке его периода (ТР-62)" : d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate ? `заменён данными 1С с ${fmtD(DB.settings.switchDate)} (ТР-72)` : "";
+  let h = st==="posted" ? `<span class="tag ok">Проведён</span>` : st==="notposted" ? `<span class="tag">Не проведён${d.statusRaw?`: <span class="notr">${esc(d.statusRaw)}</span>`:d.status&&d.status!=="Не проведён"?`: ${esc(d.status.toLowerCase())}`:""}</span>`
+    : st==="excluded" ? `<span class="tag" title="${esc(why)}">Исключён</span>` : `<span class="tag off" ${why?`title="${esc(why)}"`:""}>Помечен на удаление${d.source==="manual"&&!d.deleted&&why?" · заменён данными 1С":""}</span>`;
+  if(DB.settings.startDate && d.date < DB.settings.startDate && st==="posted") h += ` <span class="tag warn">до начала учёта</span>`;
+  if(needsReview(d)) h += ` <span class="tag warn">Требует проверки</span>`;
+  if(notBankDone(d)) h += ` <span class="tag warn">Не исполнен банком</span>`;
+  return h;
 }
+const docRowClass = d => "st-" + docState(d);
 /** Стороны внутренней операции: деньги остаются на счёте, меняется владелец (ТР-27) */
 function opLegs(o){
   const legs = [];
   const mk = (L, from, to, n) => { const a = acc(L.acc); if(!a || !(L.sum>0) || !(L.rate>0)) return null;
-    return {n, acc:L.acc, org:a.org, cur:a.cur, sum:L.sum, rate:L.rate, usd:r2(L.sum/L.rate), from, to}; };
+    const cur = L.cur || a.cur; if(!accCurs(a).includes(cur)) return null;
+    return {n, acc:L.acc, org:a.org, cur, sum:L.sum, rate:L.rate, usd:r2(L.sum/L.rate), from, to}; };
   if(o.kind==="exchange"){
     const a = mk(o.leg1||{}, o.from, o.to, 1), b = mk(o.leg2||{}, o.to, o.from, 2);
     if(a) legs.push(a); if(b) legs.push(b);
@@ -467,12 +488,15 @@ function facts(){
   const out = [];
   const d0 = DB.settings.startDate;
   if(d0) DB.opening.forEach(x=>{ const a = acc(x.acc); if(!a) return;
-    out.push({date:d0, acc:x.acc, org:a.org, cur:a.cur, wallet:x.wallet||null, sum:x.sum, usd:toUSD(x.sum,a.cur,d0), cat:"opening", src:{k:"open", id:x.id}}); });
-  DB.docs.forEach(d=>{
-    if(!docCounts(d)) return;
+    const c = x.cur || a.cur;
+    out.push({date:d0, acc:x.acc, org:a.org, cur:c, wallet:x.wallet||null, sum:x.sum, usd:toUSD(x.sum,c,d0), cat:"opening", src:{k:"open", id:x.id}}); });
+  DB.docs.forEach(d0_=>{
+    const [d, counted] = docMovement(d0_);
+    if(!counted) return;
     if(d.type==="ПЕР"){
       [["from",-1],["to",+1]].forEach(([side,sg])=>{ const S = d[side]; const a = acc(S.acc); if(!a) return;
-        out.push({date:d.date, acc:S.acc, org:a.org, cur:a.cur, wallet:S.wallet||null, sum:sg*S.sum, usd:sg*(S.usd ?? toUSD(S.sum,a.cur,d.date)),
+        const c = S.cur || a.cur;
+        out.push({date:d.date, acc:S.acc, org:a.org, cur:c, wallet:S.wallet||null, sum:sg*S.sum, usd:sg*(S.usd ?? toUSD(S.sum,c,d.date)),
           cat:"transfer", op:d.op, cf:S.cf, src:{k:"doc", id:d.id, side}}); });
       return;
     }
@@ -480,7 +504,7 @@ function facts(){
     d.lines.forEach((l,i)=>{
       out.push({date:d.date, acc:d.acc, org:d.org, cur:d.cur || (a&&a.cur), wallet:l.wallet||null, sum:sg*l.sum,
         usd:sg*(isFinite(l.usd) && l.usd!==null ? l.usd : toUSD(l.sum, d.cur, d.date)),
-        cat: sg>0 ? "in" : "out", cf:l.cf, notBank: d.type==="СБДС" && !d.bankDone, src:{k:"doc", id:d.id, line:i}});
+        cat: sg>0 ? "in" : "out", cf:l.cf, notBank: d.type==="СБДС" && !d0_.bankDate, src:{k:"doc", id:d.id, line:i}});
     });
   });
   DB.ops.forEach(o=>{
@@ -518,7 +542,7 @@ function usdOf(byCur, date){ let s = 0, miss = []; for(const [c,v] of Object.ent
 let RECON = null;
 /** Строки сверки считает сервер по всем кошелькам счёта (интерфейсу могут быть видны не все) */
 function recon(){ if(RECON) return RECON; return RECON = (DB.recon||[]).map(r=>Object.assign({a:acc(r.acc)}, r)); }
-const badAccs = () => new Set(recon().filter(r=>Math.abs(r.diff)>=0.005).map(r=>r.acc));
+const badAccs = () => DB.settings.recon1c ? new Set(recon().filter(r=>Math.abs(r.diff)>=0.005).map(r=>r.acc)) : new Set();
 
 /* ============================================================
    8. УВЕДОМЛЕНИЯ (ТР-18, ТР-24, ТР-42, ТР-56, ТР-57)

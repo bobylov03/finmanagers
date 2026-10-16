@@ -9,13 +9,14 @@ import math
 from .util import fmt, fmt_d, is_num, norm, prev_month_end, r2, today_iso
 
 ROLES = {"owner": "Собственник", "fcHead": "Руководитель финцентра", "treasurer": "Казначей",
-         "deptHead": "Руководитель отдела", "admin": "Администратор"}
+         "deptHead": "Руководитель отдела", "finControl": "Фин. контролер", "admin": "Администратор"}
 OP_KINDS = {
     "loan": {"name": "Выдача займа", "from": "Кошелёк-займодавец", "to": "Кошелёк-заёмщик"},
     "repay": {"name": "Погашение займа", "from": "Кошелёк-заёмщик", "to": "Кошелёк-займодавец"},
     "funding": {"name": "Безвозмездное финансирование", "from": "Головной кошелёк", "to": "Кошелёк"},
     "dividends": {"name": "Дивиденды", "from": "Кошелёк", "to": "Головной кошелёк"},
-    "closeDiv": {"name": "Дивиденды односторонние (перенос остатка при закрытии)", "from": "Закрываемый кошелёк", "to": "Выбранный кошелёк"},
+    # МД-24: вид убран; остаётся только для показа старых операций
+    "closeDiv": {"name": "Дивиденды односторонние (устаревший вид)", "from": "Закрываемый кошелёк", "to": "Выбранный кошелёк", "legacy": True},
     "exchange": {"name": "Обмен между кошельками на двух счетах", "from": "Кошелёк X", "to": "Кошелёк Y"},
 }
 DOC_TYPES = {
@@ -69,6 +70,22 @@ def cur_code(C, cid):
 
 def is_usd(C, cid):
     return str(cur_code(C, cid)).upper() == "USD" or str(cid).upper() == "USD"
+
+
+def acc_curs(a):
+    """Валюты счёта или кассы: у мультивалютного счёта их несколько, каждая — отдельная позиция."""
+    if not a:
+        return []
+    return list(a.get("curs") or ([a["cur"]] if a.get("cur") else []))
+
+
+def positions(C):
+    """Все позиции: счёт или касса × валюта."""
+    out = []
+    for a in C.S["accounts"] + C.S["cashboxes"]:
+        for c in acc_curs(a):
+            out.append((a["id"], c))
+    return out
 
 
 def is_active_at(x, d):
@@ -162,7 +179,19 @@ def visible_wallets(C, u):
 
 
 def sees_no_wallet(u):
-    return is_admin(u) or has(u, "owner") or has(u, "treasurer")
+    return is_admin(u) or has(u, "owner") or has(u, "treasurer") or has(u, "finControl")
+
+
+def can_review(C, u, d):
+    """ТР-85: проверяет казначей любого кошелька из строк документа; строки без кошелька — фин. контролер или администратор."""
+    if is_admin(u):
+        return True
+    src = d.get("held") or d
+    ws = [src.get("from", {}).get("wallet"), src.get("to", {}).get("wallet")] if d.get("type") == "ПЕР" else [l.get("wallet") for l in (src.get("lines") or [])]
+    ws += [l.get("wallet") for l in (d.get("lines") or [])]
+    if any(w and can_edit_wallet(C, u, w) for w in ws):
+        return True
+    return has(u, "finControl") and any(not w for w in ws)
 
 
 def can_edit_wallet(C, u, wid):
@@ -191,7 +220,7 @@ def period_error(C, d):
         return "Не указана дата"
     if in_closed(C, d):
         return f"Период по {fmt_d(st['closedTo'])} закрыт (ТР-55). Исправления вносятся новой операцией в открытом периоде."
-    if d in reconciled_days(C):
+    if st.get("recon1c") and d in reconciled_days(C):
         return f"За {fmt_d(d)} сверка с 1С прошла без расхождений — правка операций этого дня запрещена (ТР-55)."
     if st.get("startDate") and d < st["startDate"]:
         return f"Дата раньше начала учёта по кошелькам ({fmt_d(st['startDate'])})."
@@ -262,18 +291,49 @@ def apply_rules(C, doc, force=False):
     return n
 
 
-# ---------------- расчёт фактов ----------------
+# ---------------- состояния документа (ТР-107) и расчёт фактов ----------------
+STATE_NAMES = {"deleted": "Помечен на удаление", "excluded": "Исключён", "notposted": "Не проведён", "posted": "Проведён"}
+
+
+def doc_state(C, d):
+    """Ровно одно состояние; при нескольких основаниях берётся строка выше в таблице ТР-107."""
+    st = C.S["settings"]
+    if d.get("deleted") or d.get("status") == "Помечен на удаление":
+        return "deleted"
+    if d.get("source") == "manual" and st.get("switchDate") and d["date"] >= st["switchDate"]:
+        return "deleted"    # ТР-72: ручной документ заменён документами 1С; «Исключён» — только отсутствие в файле (ТР-107)
+    if d.get("excluded"):
+        return "excluded"
+    if d.get("status") != "Проведён" or (d.get("type") == "СБДС" and d.get("approved") is False):
+        return "notposted"
+    return "posted"
+
+
 def doc_counts(C, d):
     st = C.S["settings"]
-    if d.get("excluded") or d.get("deleted") or d.get("status") != "Проведён":
-        return False
-    if d.get("type") == "СБДС" and d.get("approved") is False:
+    if doc_state(C, d) != "posted":
         return False
     if st.get("startDate") and d["date"] < st["startDate"]:
         return False
-    if d.get("source") == "manual" and st.get("switchDate") and d["date"] >= st["switchDate"]:
-        return False
     return True
+
+
+def movement_snap(C, d):
+    """Движение документа, которое сохраняется в расчёте до проверки казначеем (ТР-85)."""
+    snap = {"counted": doc_counts(C, d), "date": d["date"], "org": d.get("org"), "acc": d.get("acc"), "cur": d.get("cur"), "status": d.get("status"),
+            "approved": d.get("approved"), "lines": [{"sum": l.get("sum"), "usd": l.get("usd"), "wallet": l.get("wallet"), "cf": l.get("cf"),
+                                                      "dept": l.get("dept"), "zone": l.get("zone"), "cpty": l.get("cpty")} for l in d.get("lines") or []]}
+    if d.get("type") == "ПЕР":
+        snap["from"], snap["to"] = dict(d.get("from") or {}), dict(d.get("to") or {})
+    return snap
+
+
+def doc_movement(C, d):
+    """Что считать: удержанное прежнее движение (ТР-85) или текущее."""
+    h = d.get("held")
+    if h:
+        return h, bool(h.get("counted"))
+    return d, doc_counts(C, d)
 
 
 def op_legs(C, o):
@@ -284,7 +344,10 @@ def op_legs(C, o):
         a = C.acc(L.get("acc"))
         if not a or not is_num(L.get("sum")) or L["sum"] <= 0 or not is_num(L.get("rate")) or L["rate"] <= 0:
             return None
-        return {"n": n, "acc": L["acc"], "org": a["org"], "cur": a["cur"], "sum": L["sum"], "rate": L["rate"], "usd": r2(L["sum"] / L["rate"]), "from": frm, "to": to}
+        cur = L.get("cur") or a["cur"]
+        if cur not in acc_curs(a):
+            return None
+        return {"n": n, "acc": L["acc"], "org": a["org"], "cur": cur, "sum": L["sum"], "rate": L["rate"], "usd": r2(L["sum"] / L["rate"]), "from": frm, "to": to}
     if o.get("kind") == "exchange":
         a, b = mk(o.get("leg1"), o.get("from"), o.get("to"), 1), mk(o.get("leg2"), o.get("to"), o.get("from"), 2)
         legs += [x for x in (a, b) if x]
@@ -313,16 +376,18 @@ def facts(C):
             for x in C.S["opening"]:
                 a = C.acc(x["acc"])
                 if a:
-                    out.append({"date": d0, "acc": x["acc"], "cur": a["cur"], "wallet": x.get("wallet") or None, "sum": x["sum"], "cat": "opening"})
-        for d in C.S["docs"]:
-            if not doc_counts(C, d):
+                    out.append({"date": d0, "acc": x["acc"], "cur": x.get("cur") or a["cur"], "wallet": x.get("wallet") or None, "sum": x["sum"], "cat": "opening"})
+        for d0_ in C.S["docs"]:
+            d, counted = doc_movement(C, d0_)
+            if not counted:
                 continue
+            d = dict(d, id=d0_["id"], type=d0_["type"])
             if d["type"] == "ПЕР":
                 for side, sg in (("from", -1), ("to", 1)):
                     S_ = d.get(side) or {}
                     a = C.acc(S_.get("acc"))
                     if a:
-                        out.append({"date": d["date"], "acc": S_["acc"], "cur": a["cur"], "wallet": S_.get("wallet") or None, "sum": sg * (S_.get("sum") or 0), "cat": "transfer", "doc": d["id"]})
+                        out.append({"date": d["date"], "acc": S_["acc"], "cur": S_.get("cur") or a["cur"], "wallet": S_.get("wallet") or None, "sum": sg * (S_.get("sum") or 0), "cat": "transfer", "doc": d["id"]})
                 continue
             sg = DOC_TYPES[d["type"]]["sign"]
             for l in d["lines"]:
@@ -347,6 +412,16 @@ def acc_facts(C):
     return C.cache("accFacts", build)
 
 
+def pos_facts(C):
+    """Факты по позиции (счёт × валюта)."""
+    def build():
+        m = {}
+        for f in facts(C):
+            m.setdefault((f["acc"], f["cur"]), []).append(f)
+        return m
+    return C.cache("posFacts", build)
+
+
 def balances(C, d, flist):
     m = {}
     for f in flist:
@@ -360,14 +435,14 @@ def balances(C, d, flist):
 # ---------------- сверка с 1С (ТР-41…43) ----------------
 def recon(C):
     def build():
-        by_acc = {}
+        by_pos = {}
         for b in C.S["bal1c"]:
-            by_acc.setdefault(b["acc"], []).append(b)
-        af = acc_facts(C)
+            by_pos.setdefault((b["acc"], b.get("cur") or (C.acc(b["acc"]) or {}).get("cur")), []).append(b)
+        pf = pos_facts(C)
         rows = []
-        for aid, lst in by_acc.items():
+        for (aid, pcur), lst in by_pos.items():
             lst.sort(key=lambda x: x["date"])
-            fl = af.get(aid, [])
+            fl = pf.get((aid, pcur), [])
             hist = []
             for b in lst:
                 w = r2(sum(f["sum"] for f in fl if f["date"] <= b["date"]))
@@ -380,7 +455,7 @@ def recon(C):
                 else:
                     break
             a = C.acc(aid)
-            rows.append({"acc": aid, "org": a and a["org"], "cur": a and a["cur"], **last, "since": since, "hist": hist})
+            rows.append({"acc": aid, "org": a and a["org"], "cur": pcur, **last, "since": since, "hist": hist})
         return rows
     return C.cache("recon", build)
 
@@ -396,6 +471,8 @@ def reconciled_days(C):
 
 
 def bad_accs(C):
+    if not C.S["settings"].get("recon1c"):
+        return set()
     return {r["acc"] for r in recon(C) if abs(r["diff"]) >= 0.005}
 
 
@@ -419,7 +496,7 @@ def notifications(C, u, d=None):
         if A or u["id"] in treasurers_of(C, w):
             out.append({"lvl": "err", "text": f"Отрицательный остаток: {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}", "tr": "ТР-24", "go": "rep37"})
     af = acc_facts(C)
-    for r in recon(C):
+    for r in (recon(C) if C.S["settings"].get("recon1c") else []):
         if abs(r["diff"]) < 0.005:
             continue
         ws = {f["wallet"] for f in af.get(r["acc"], []) if f["wallet"]}
@@ -429,8 +506,17 @@ def notifications(C, u, d=None):
         if A or u["id"] in treasurers_of(C, doc["from"]["wallet"]) or u["id"] in treasurers_of(C, doc["to"]["wallet"]):
             out.append({"lvl": "warn", "text": f"Требует оформления: {doc['no']} от {fmt_d(doc['date'])} — {nm(C.get('wallets', doc['from']['wallet']))} → {nm(C.get('wallets', doc['to']['wallet']))}", "tr": "ТР-57", "go": "formalize"})
     no_w = sum(1 for f in facts(C) if not f["wallet"] and f.get("doc"))
-    if no_w and (A or has(u, "treasurer")):
+    if no_w and (A or has(u, "treasurer") or has(u, "finControl")):
         out.append({"lvl": "warn", "text": f"Строк без кошелька: {no_w}", "tr": "ТР-23", "go": "nowallet"})
+    rv = [d for d in C.S["docs"] if d.get("review") and can_review(C, u, d)]
+    if rv:
+        out.append({"lvl": "warn", "text": f"Документы требуют проверки после изменения в ERP: {len(rv)}", "tr": "ТР-85", "go": "docs?state=review"})
+    try:
+        from .daily import db_notifications
+        out += db_notifications(C, u, d)
+    except Exception:  # уведомления Daily Balance не должны ломать остальные
+        import logging
+        logging.getLogger("wallets").exception("Daily Balance notifications")
     unseen = [c for c in C.S["closedChanges"] if u["id"] not in (c.get("seen") or [])]
     if unseen and (A or has(u, "treasurer")):
         out.append({"lvl": "warn", "text": f"Изменения 1С в закрытом периоде: {len(unseen)}", "tr": "ТР-56", "go": "closedch"})

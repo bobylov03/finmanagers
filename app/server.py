@@ -12,8 +12,9 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 from . import actions as A
+from . import daily as DB_
 from . import importer as I
-from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, facts, has, hidden_allowed, is_admin, line_visible, notifications,
+from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
                     own_wallets, recon, reconciled_days, sees_no_wallet, visible_wallets, auto_close_period)
 from .mailer import mail_configured, send_notifications
 from .store import Store
@@ -209,10 +210,17 @@ def create_app(db_path=None, start_scheduler=True):
                         docs.append(dict(d, hiddenLines=0)); refd.update(w for w in ws if w)
                     continue
                 vis = [dict(l, idx=i) for i, l in enumerate(d["lines"]) if line_visible(c, u, l.get("wallet"))]
-                if not vis:
+                held = d.get("held")
+                hvis = [l for l in (held or {}).get("lines") or [] if line_visible(c, u, l.get("wallet"))]
+                if not vis and not hvis:
                     continue
                 hidden = len(d["lines"]) - len(vis)
-                docs.append(dict(d, lines=vis, hiddenLines=hidden, versions=d["versions"] if not hidden else [], fileSig=""))
+                x = dict(d, lines=vis, hiddenLines=hidden, versions=d["versions"] if not hidden else [], fileSig="")
+                if held:   # удержанное до проверки движение — тоже только видимые строки (раздел 9)
+                    x["held"] = dict(held, lines=hvis)
+                    if hidden and x.get("review"):
+                        x["review"] = dict(x["review"], diff=[q for q in x["review"].get("diff") or [] if not q.get("line")])
+                docs.append(x)
             ops = [o for o in S["ops"] if o.get("from") in V or o.get("to") in V]
             for o in ops:
                 refd.update(x for x in (o.get("from"), o.get("to")) if x)
@@ -227,7 +235,8 @@ def create_app(db_path=None, start_scheduler=True):
         else:
             named = set(V)
             if has(u, "treasurer"):
-                named |= {w["id"] for w in S["wallets"] if hidden_allowed(c, u, w)}
+                # названия только действующих нескрытых кошельков; закрытые — если встречаются в видимых данных
+                named |= {w["id"] for w in S["wallets"] if hidden_allowed(c, u, w) and (not w.get("closed") or w["id"] in refd)}
             wallets = []
             for w in S["wallets"]:
                 if w["id"] in named:
@@ -246,6 +255,12 @@ def create_app(db_path=None, start_scheduler=True):
             out["users"] = [{"id": x["id"], "name": x["name"], "roles": x["roles"], "wallets": x.get("wallets") or [], "active": x["active"], "login": "", "email": ""}
                             for x in S["users"]]
         out["bal1c"] = S["bal1c"] if adm else []
+        upl = adm or (has(u, "treasurer") and u.get("canUpload"))
+        out["mappings"] = S["mappings"] if upl else []
+        out["dbPositions"] = DB_.visible_positions(c, u)
+        if adm:
+            out["dbPositions"] = S["dbPositions"]
+            out["dbStart"] = DB_.opening_control(c)
         out["exchangeLog"] = S["exchangeLog"] if adm else []
         out["closedChanges"] = S["closedChanges"] if (adm or has(u, "treasurer")) else []
         rows = recon(c)
@@ -258,9 +273,14 @@ def create_app(db_path=None, start_scheduler=True):
         if adm:
             out["notificationsByUser"] = {x["id"]: notifications(c, x) for x in S["users"] if x.get("active")}
             out["mailConfigured"] = mail_configured()
-        out["me"] = {"id": u["id"], "name": u["name"], "roles": u["roles"], "wallets": u.get("wallets") or [], "lang": u.get("lang") or "", "email": u.get("email") or ""}
+        out["me"] = {"id": u["id"], "name": u["name"], "roles": u["roles"], "wallets": u.get("wallets") or [], "lang": u.get("lang") or "", "email": u.get("email") or "",
+                     "canUpload": bool(u.get("canUpload"))}
         out["perms"] = {"visible": sorted(V), "editable": sorted(w["id"] for w in S["wallets"] if can_edit_wallet(c, u, w["id"])),
-                        "admin": adm, "canEnter": can_enter(u), "seesNoWallet": nw}
+                        "admin": adm, "canEnter": can_enter(u), "seesNoWallet": nw, "canUpload": bool(upl),
+                        "dbFull": DB_.full_access(u), "dbMine": [p["id"] for p in DB_.my_positions(c, u)],
+                        "review": [d["id"] for d in S["docs"] if d.get("review") and can_review(c, u, d)]}
+        out["dbToday"] = DB_.today_local(c)
+        out["dbCurrent"] = DB_.current_day(c)
         out["version"] = store.version
         out["today"] = today_iso()
         return out
@@ -319,7 +339,91 @@ def create_app(db_path=None, start_scheduler=True):
 
     @app.post("/api/opening/<acc_id>")
     def opening(acc_id):
-        return act(A.save_opening, acc_id, body().get("rows"))
+        p = body()
+        return act(A.save_opening, acc_id, p.get("rows"), p.get("cur"))
+
+    @app.post("/api/docs/<doc_id>/confirm")
+    def doc_confirm(doc_id):
+        return act(A.confirm_review, doc_id)
+
+    @app.post("/api/statemap")
+    def statemap():
+        p = body()
+        return act(A.save_state_value, p.get("value"), p.get("meaning"))
+
+    @app.post("/api/mappings")
+    def mappings():
+        p = body()
+        return act(A.save_mapping, p.get("kind"), p.get("raw"), p.get("target"))
+
+    # ---------------- Daily Balance (раздел 7) ----------------
+    def db_date():
+        d = request.args.get("date") or ""
+        return d if A.valid_iso(d) else DB_.current_day(C())
+
+    def db_json(fn):
+        with store.lock:
+            return Response(json.dumps(dict(ok=True, **fn()), ensure_ascii=False, separators=(",", ":")), mimetype="application/json")
+
+    @app.get("/api/db/my")
+    def db_my():
+        return db_json(lambda: {"view": DB_.my_view(C(), g.user, db_date())})
+
+    @app.get("/api/db/morning")
+    def db_morning():
+        return db_json(lambda: {"view": DB_.morning_view(C(), g.user, db_date(), request.args.get("mode") or "morning")})
+
+    @app.get("/api/db/recon")
+    def db_recon():
+        return db_json(lambda: {"view": DB_.recon_view(C(), g.user, db_date(), request.args.get("state") or "submit")})
+
+    @app.get("/api/db/history")
+    def db_history():
+        c = C(); pid = request.args.get("pos") or ""
+        if pid not in {p["id"] for p in DB_.visible_positions(c, g.user)}:
+            raise A.Forbidden("Позиция недоступна")
+        return db_json(lambda: {"rows": DB_.history(c, g.user, pid)})
+
+    @app.get("/api/db/movements")
+    def db_movements():
+        c = C(); pid = request.args.get("pos") or ""
+        pos = next((p for p in DB_.visible_positions(c, g.user) if p["id"] == pid), None)
+        if not pos:
+            raise A.Forbidden("Позиция недоступна")
+        return db_json(lambda: DB_.k_movements(c, g.user, pos, db_date()))
+
+    @app.post("/api/db/draft")
+    def db_draft():
+        p = body()
+        return act(A.db_save_draft, p.get("date"), p.get("data"))
+
+    @app.post("/api/db/submit")
+    def db_submit():
+        p = body()
+        return act(A.db_submit, p.get("date"), p.get("data"))
+
+    @app.post("/api/db/update")
+    def db_update():
+        p = body()
+        return act(A.db_update, p.get("pos"), p.get("data") or {})
+
+    @app.post("/api/db/correct")
+    def db_correct():
+        p = body()
+        return act(A.db_correct, p.get("report"), p.get("pos"), p.get("field"), p.get("value"), p.get("reason"))
+
+    @app.post("/api/db/explain")
+    def db_explain():
+        p = body()
+        return act(A.db_explain, p.get("pos"), p.get("date"), p.get("comment"))
+
+    @app.post("/api/db/positions")
+    def db_positions():
+        return act(A.db_save_position, body().get("position") or {})
+
+    @app.post("/api/db/positions/all")
+    def db_positions_all():
+        return act(A.db_add_all_positions)
 
     @app.post("/api/wallets")
     def wallets():

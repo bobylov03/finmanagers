@@ -4,20 +4,29 @@
    ============================================================ */
 let VIEW = "dash";
 let MODAL = null;
-const REPORT_VIEWS = {rep37:"Деньги по кошелькам на дату", rep75:"Где лежат деньги", rep38:"Фактический ДДС с остатками", rep40:"Внутренние займы", recon:"Сверка с 1С"};
+const REPORT_VIEWS = {rep37:"Деньги по кошелькам на дату", rep75:"Где лежат деньги", rep38:"Фактический ДДС с остатками", rep40:"Внутренние займы", recon:"Сверка с 1С", hist:"История согласования", dbmorning:"Daily Balance: остатки на утро", dbrecon:"Daily Balance: сверка"};
 
 function menu(){
   const u = me(); const A = isAdmin(u);
   const nf = notifications(u);
   const cnt = k => nf.filter(n=>n.go===k).length;
   const noW = facts().filter(f=>!f.wallet && f.src.k==="doc").length;
+  const P = DB.perms||{}; const dbMine = (P.dbMine||[]).length; const dbVis = P.dbFull || (DB.dbPositions||[]).length;
+  const dbItems = [
+    ...(has(u,"treasurer") && (dbMine || A) ? [["dbmy","Мой отчёт", nf.some(n=>n.go==="dbmy")?"!":""]] : []),
+    ...(dbVis ? [["dbmorning","Остатки на утро"],["dbrecon","Сверка", cnt("dbrecon")||""]] : []),
+    ...(A ? [["dbsettings","Настройки Daily Balance"]] : []),
+  ];
+  const rv = (P.review||[]).length;
   const M = [
     ["Обзор", [["dash","Сводка"]]],
-    ["Отчёты", [["rep37","Деньги по кошелькам"],["rep75","Где лежат деньги"],["rep38","Фактический ДДС"],["rep40","Внутренние займы"],["recon","Сверка с 1С", recon().filter(r=>Math.abs(r.diff)>=0.005).length||""]]],
+    ...(dbItems.length ? [["Daily Balance", dbItems]] : []),
+    ["Отчёты", [["rep37","Деньги по кошелькам"],["rep75","Где лежат деньги"],["rep38","Фактический ДДС"],["rep40","Внутренние займы"],["hist","История согласования"], ...(DB.settings.recon1c||A ? [["recon","Сверка с 1С", DB.settings.recon1c ? (recon().filter(r=>Math.abs(r.diff)>=0.005).length||"") : ""]] : [])]],
     ["Операции", [
-      ["docs","Документы"],
+      ["docs","Документы", rv||""],
       ["ops","Внутренние операции"],
       ...(seesNoWallet(u) ? [["nowallet","Без кошелька", noW||""]] : []),
+      ...(!A && P.canUpload ? [["import","Загрузка файлов"]] : []),
       ...(A||has(u,"treasurer") ? [["formalize","Требует оформления", needsFormalizing().length||""],["closedch","Изменения в закрытом периоде", cnt("closedch")?DB.closedChanges.length:""]] : []),
     ]],
     ["Справочники", [["wallets","Кошельки"], ...(A?[["rules","Правила автозаполнения"],["refs","Справочники 1С"]]:[])]],
@@ -27,6 +36,9 @@ function menu(){
 }
 function allowedViews(){ return new Set(menu().flatMap(g=>g[1].map(x=>x[0]))); }
 function go(v){
+  const qi = String(v).indexOf("?");
+  if(qi>=0){ const p = new URLSearchParams(v.slice(qi+1)); v = v.slice(0,qi); const st = ROUTE_STATE[v] && ROUTE_STATE[v]();
+    if(st) p.forEach((val,k)=>{ if(k in st) st[k] = Array.isArray(st[k]) ? val.split(",").filter(Boolean) : typeof st[k]==="boolean" ? val==="1" : val; }); }
   if(!allowedViews().has(v)) v = "dash";
   if(v!==VIEW) ROUTE_PUSH = true;
   VIEW = v; POP = null; window.scrollTo(0,0);
@@ -151,7 +163,8 @@ function renderInner(){
   const V = {dash:viewDash, rep37:viewRep37, rep75:viewRep75, rep38:viewRep38, rep40:viewRep40, recon:viewRecon,
     docs:viewDocs, ops:viewOps, nowallet:viewNoWallet, formalize:viewFormalize, closedch:viewClosedCh,
     wallets:viewWallets, rules:viewRules, refs:viewRefs, import:viewImport, xlog:viewXlog, opening:viewOpening,
-    users:viewUsers, mail:viewMail, settings:viewSettings, audit:viewAudit}[VIEW] || viewDash;
+    users:viewUsers, mail:viewMail, settings:viewSettings, audit:viewAudit, hist:viewHist,
+    dbmy:viewDbMy, dbmorning:viewDbMorning, dbrecon:viewDbRecon, dbsettings:viewDbSettings}[VIEW] || viewDash;
   let html; try{ html = V(); }catch(e){ console.error(e); html = `<div class="alert err">Ошибка отображения: ${esc(e.message)}</div>`; }
   $("#view").innerHTML = html;
   pageHead();
@@ -220,8 +233,8 @@ function optsAccounts(orgId, val, {cash=null, curId=null, empty="— выбер�
   let list = [];
   if(cash!==true) list.push(...DB.accounts.map(a=>Object.assign({kind:"Счёт"},a)));
   if(cash!==false) list.push(...DB.cashboxes.map(a=>Object.assign({kind:"Касса"},a)));
-  list = list.filter(a=>a.org===orgId && (!curId || a.cur===curId) && (isActiveAt(a,CUR.date) || a.id===val));
-  return `<option value="">${esc(orgId?empty:"— сначала организация —")}</option>` + list.map(a=>`<option value="${a.id}" ${a.id===val?"selected":""}>${esc(a.name)} · ${esc(curCode(a.cur))}${a.accType==="Депозитный"?" · депозит":""}</option>`).join("");
+  list = list.filter(a=>a.org===orgId && (!curId || accCurs(a).includes(curId)) && (isActiveAt(a,CUR.date) || a.id===val));
+  return `<option value="">${esc(orgId?empty:"— сначала организация —")}</option>` + list.map(a=>`<option value="${a.id}" ${a.id===val?"selected":""}>${esc(a.name)} · ${esc(accCurs(a).map(curCode).join("/"))}${a.accType==="Депозитный"?" · депозит":""}</option>`).join("");
 }
 
 /* --- ввод сумм с разделением разрядов (МД-10) --- */
@@ -286,7 +299,7 @@ function walletChecklist(selected, onToggle, {only}={}){
    АДРЕСА СТРАНИЦ: #/раздел?фильтры — работают F5, «Назад», ссылки
    ============================================================ */
 let ROUTE_PUSH = false;
-const ROUTE_STATE = {rep37:()=>RF.rep37, rep75:()=>RF.rep75, rep38:()=>RF.rep38, rep40:()=>RF.rep40, recon:()=>RF.recon, docs:()=>DF, ops:()=>OF};
+const ROUTE_STATE = {rep37:()=>RF.rep37, rep75:()=>RF.rep75, rep38:()=>RF.rep38, rep40:()=>RF.rep40, recon:()=>RF.recon, hist:()=>RF.hist, docs:()=>DF, ops:()=>OF};
 let ROUTE_DEF = null;
 function routeDefaults(){ if(!ROUTE_DEF){ ROUTE_DEF = {}; Object.entries(ROUTE_STATE).forEach(([k,f])=>{ ROUTE_DEF[k] = JSON.parse(JSON.stringify(f())); }); } return ROUTE_DEF; }
 function buildHash(){

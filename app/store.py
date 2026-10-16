@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS counters(prefix TEXT PRIMARY KEY, n INTEGER NOT NULL)
 CREATE TABLE IF NOT EXISTS currencies(id TEXT PRIMARY KEY, name TEXT, code TEXT, deactivated TEXT);
 CREATE TABLE IF NOT EXISTS rates(cur TEXT NOT NULL, date TEXT NOT NULL, rate REAL NOT NULL, PRIMARY KEY(cur, date));
 CREATE TABLE IF NOT EXISTS orgs(id TEXT PRIMARY KEY, name TEXT, deactivated TEXT);
-CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, name TEXT, org TEXT, cur TEXT, bank TEXT, acc_type TEXT, deactivated TEXT);
-CREATE TABLE IF NOT EXISTS cashboxes(id TEXT PRIMARY KEY, name TEXT, org TEXT, cur TEXT, deactivated TEXT);
+CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, name TEXT, org TEXT, cur TEXT, bank TEXT, acc_type TEXT, deactivated TEXT, curs TEXT);
+CREATE TABLE IF NOT EXISTS cashboxes(id TEXT PRIMARY KEY, name TEXT, org TEXT, cur TEXT, deactivated TEXT, curs TEXT);
 CREATE TABLE IF NOT EXISTS cf_types(id TEXT PRIMARY KEY, name TEXT, deactivated TEXT);
 CREATE TABLE IF NOT EXISTS depts(id TEXT PRIMARY KEY, name TEXT, parent TEXT, deactivated TEXT);
 CREATE TABLE IF NOT EXISTS zones(id TEXT PRIMARY KEY, name TEXT, deactivated TEXT);
@@ -35,26 +35,51 @@ CREATE TABLE IF NOT EXISTS wallets(id TEXT PRIMARY KEY, name TEXT NOT NULL, pare
 CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY, pos INTEGER, name TEXT, conds TEXT, wallet TEXT, active INTEGER);
 CREATE TABLE IF NOT EXISTS contracts(id TEXT PRIMARY KEY, name TEXT, lender TEXT, borrower TEXT, created TEXT);
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT NOT NULL, login TEXT NOT NULL UNIQUE COLLATE NOCASE, email TEXT,
-  roles TEXT, wallets TEXT, active INTEGER, lang TEXT, pw_salt TEXT, pw_hash TEXT);
+  roles TEXT, wallets TEXT, active INTEGER, lang TEXT, pw_salt TEXT, pw_hash TEXT, can_upload INTEGER);
 CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created TEXT, last_seen TEXT);
 CREATE TABLE IF NOT EXISTS login_failures(login TEXT, t TEXT);
 
 -- Документы: из файла 1С и ручной ввод; ПЕР — две стороны в sides
 CREATE TABLE IF NOT EXISTS docs(id TEXT PRIMARY KEY, no TEXT, source TEXT, guid TEXT UNIQUE, type TEXT, op TEXT, no1c TEXT, date1c TEXT,
   date TEXT, org TEXT, acc TEXT, cur TEXT, status TEXT, status_raw TEXT, approved INTEGER, bank_done INTEGER, bank_date TEXT,
-  excluded INTEGER, deleted INTEGER, author TEXT, created TEXT, loaded TEXT, file_name TEXT, file_sig TEXT, sides TEXT);
+  excluded INTEGER, deleted INTEGER, author TEXT, created TEXT, loaded TEXT, file_name TEXT, file_sig TEXT, sides TEXT,
+  erp_type TEXT, stage TEXT, rate REAL, doc_sum REAL, fixed TEXT, held TEXT, review TEXT, fmt TEXT);
 CREATE INDEX IF NOT EXISTS docs_date ON docs(date);
 CREATE TABLE IF NOT EXISTS doc_lines(doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE, idx INTEGER NOT NULL,
   sum REAL, usd REAL, wallet TEXT, wsrc TEXT, rule TEXT, file_wallet TEXT, dept TEXT, cf TEXT, zone TEXT, cpty TEXT,
-  contract TEXT, purpose TEXT, PRIMARY KEY(doc_id, idx));
+  contract TEXT, purpose TEXT, fixed TEXT, PRIMARY KEY(doc_id, idx));
 CREATE INDEX IF NOT EXISTS doc_lines_wallet ON doc_lines(wallet);
 CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, no TEXT, date TEXT, kind TEXT, from_w TEXT, to_w TEXT, contract TEXT, comment TEXT,
   leg1 TEXT, leg2 TEXT, same_cur INTEGER, author TEXT, created TEXT, posted INTEGER, deleted INTEGER, linked_doc TEXT);
 CREATE TABLE IF NOT EXISTS versions(id INTEGER PRIMARY KEY AUTOINCREMENT, obj_kind TEXT, obj_id TEXT, t TEXT, u TEXT, source TEXT,
   diff TEXT, before TEXT, after TEXT);
 CREATE INDEX IF NOT EXISTS versions_obj ON versions(obj_kind, obj_id);
-CREATE TABLE IF NOT EXISTS opening(id TEXT PRIMARY KEY, acc TEXT, wallet TEXT, sum REAL);
-CREATE TABLE IF NOT EXISTS bal1c(date TEXT NOT NULL, acc TEXT NOT NULL, sum REAL, PRIMARY KEY(date, acc));
+CREATE TABLE IF NOT EXISTS opening(id TEXT PRIMARY KEY, acc TEXT, wallet TEXT, sum REAL, cur TEXT);
+CREATE TABLE IF NOT EXISTS bal1c(date TEXT NOT NULL, acc TEXT NOT NULL, cur TEXT NOT NULL DEFAULT '', sum REAL, PRIMARY KEY(date, acc, cur));
+-- Сопоставления названий из файла со справочниками (ТР-109)
+CREATE TABLE IF NOT EXISTS mappings(kind TEXT NOT NULL, raw_norm TEXT NOT NULL, raw TEXT, target TEXT, t TEXT, u TEXT, PRIMARY KEY(kind, raw_norm));
+
+-- Daily Balance (раздел 7)
+CREATE TABLE IF NOT EXISTS db_positions(id TEXT PRIMARY KEY, acc TEXT NOT NULL, cur TEXT NOT NULL, owner TEXT, active INTEGER, created TEXT);
+CREATE TABLE IF NOT EXISTS db_drafts(id TEXT PRIMARY KEY, user_id TEXT, date TEXT, data TEXT, updated TEXT);
+CREATE TABLE IF NOT EXISTS db_reports(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, date TEXT NOT NULL, user_id TEXT, uname TEXT,
+  t TEXT NOT NULL, late INTEGER, rows TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS db_corrections(id INTEGER PRIMARY KEY AUTOINCREMENT, report_id INTEGER, pos_id TEXT, date TEXT, field TEXT,
+  value REAL, reason TEXT NOT NULL, user_id TEXT, uname TEXT, t TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS db_explained(id INTEGER PRIMARY KEY AUTOINCREMENT, pos_id TEXT, date TEXT, comment TEXT, user_id TEXT, uname TEXT, t TEXT NOT NULL);
+-- ТР-96: сданные отчёты, корректировки и «Объяснено» неизменяемы — как журнал аудита
+CREATE TRIGGER IF NOT EXISTS db_reports_no_update BEFORE UPDATE ON db_reports BEGIN SELECT RAISE(ABORT, 'daily balance report is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_reports_no_delete BEFORE DELETE ON db_reports BEGIN SELECT RAISE(ABORT, 'daily balance report is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_reports_no_replace BEFORE INSERT ON db_reports WHEN NEW.id IS NOT NULL AND EXISTS(SELECT 1 FROM db_reports WHERE id=NEW.id)
+  BEGIN SELECT RAISE(ABORT, 'daily balance report is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_corr_no_update BEFORE UPDATE ON db_corrections BEGIN SELECT RAISE(ABORT, 'daily balance correction is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_corr_no_delete BEFORE DELETE ON db_corrections BEGIN SELECT RAISE(ABORT, 'daily balance correction is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_corr_no_replace BEFORE INSERT ON db_corrections WHEN NEW.id IS NOT NULL AND EXISTS(SELECT 1 FROM db_corrections WHERE id=NEW.id)
+  BEGIN SELECT RAISE(ABORT, 'daily balance correction is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_expl_no_update BEFORE UPDATE ON db_explained BEGIN SELECT RAISE(ABORT, 'daily balance record is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_expl_no_delete BEFORE DELETE ON db_explained BEGIN SELECT RAISE(ABORT, 'daily balance record is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS db_expl_no_replace BEFORE INSERT ON db_explained WHEN NEW.id IS NOT NULL AND EXISTS(SELECT 1 FROM db_explained WHERE id=NEW.id)
+  BEGIN SELECT RAISE(ABORT, 'daily balance record is immutable'); END;
 CREATE TABLE IF NOT EXISTS exchange_log(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, u TEXT, kind TEXT, file TEXT,
   added INTEGER, updated INTEGER, excluded INTEGER, errors INTEGER, text TEXT);
 CREATE TABLE IF NOT EXISTS closed_changes(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, doc_id TEXT, doc_no TEXT, date TEXT, diff TEXT, seen TEXT);
@@ -76,8 +101,9 @@ TABLES = {
     "rates": ("rates", ("cur", "date"), [("cur", "cur", "s"), ("date", "date", "s"), ("rate", "rate", "f")]),
     "orgs": ("orgs", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("deactivated", "deactivated", "s")]),
     "accounts": ("accounts", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("org", "org", "s"), ("cur", "cur", "s"), ("bank", "bank", "s"),
-                                      ("acc_type", "accType", "s"), ("deactivated", "deactivated", "s")]),
-    "cashboxes": ("cashboxes", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("org", "org", "s"), ("cur", "cur", "s"), ("deactivated", "deactivated", "s")]),
+                                      ("acc_type", "accType", "s"), ("deactivated", "deactivated", "s"), ("curs", "curs", "j")]),
+    "cashboxes": ("cashboxes", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("org", "org", "s"), ("cur", "cur", "s"), ("deactivated", "deactivated", "s"),
+                                        ("curs", "curs", "j")]),
     "cfTypes": ("cf_types", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("deactivated", "deactivated", "s")]),
     "depts": ("depts", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("parent", "parent", "s"), ("deactivated", "deactivated", "s")]),
     "zones": ("zones", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("deactivated", "deactivated", "s")]),
@@ -85,13 +111,26 @@ TABLES = {
                                     ("access", "access", "j"), ("closed", "closed", "b"), ("closed_from", "closedFrom", "s"), ("created", "created", "s")]),
     "rules": ("rules", ("id",), [("id", "id", "s"), ("pos", "_pos", "i"), ("name", "name", "s"), ("conds", "conds", "j"), ("wallet", "wallet", "s"), ("active", "active", "b")]),
     "contracts": ("contracts", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("lender", "lender", "s"), ("borrower", "borrower", "s"), ("created", "created", "s")]),
-    "opening": ("opening", ("id",), [("id", "id", "s"), ("acc", "acc", "s"), ("wallet", "wallet", "s"), ("sum", "sum", "f")]),
-    "bal1c": ("bal1c", ("date", "acc"), [("date", "date", "s"), ("acc", "acc", "s"), ("sum", "sum", "f")]),
+    "opening": ("opening", ("id",), [("id", "id", "s"), ("acc", "acc", "s"), ("wallet", "wallet", "s"), ("sum", "sum", "f"), ("cur", "cur", "s")]),
+    "bal1c": ("bal1c", ("date", "acc", "cur"), [("date", "date", "s"), ("acc", "acc", "s"), ("cur", "cur", "s"), ("sum", "sum", "f")]),
+    "mappings": ("mappings", ("kind", "rawNorm"), [("kind", "kind", "s"), ("raw_norm", "rawNorm", "s"), ("raw", "raw", "s"), ("target", "target", "s"),
+                                                   ("t", "t", "s"), ("u", "u", "s")]),
+    "dbPositions": ("db_positions", ("id",), [("id", "id", "s"), ("acc", "acc", "s"), ("cur", "cur", "s"), ("owner", "owner", "s"), ("active", "active", "b"),
+                                              ("created", "created", "s")]),
+    "dbDrafts": ("db_drafts", ("id",), [("id", "id", "s"), ("user_id", "user", "s"), ("date", "date", "s"), ("data", "data", "j"), ("updated", "updated", "s")]),
+    "dbReports": ("db_reports", ("id",), [("id", "id", "i"), ("kind", "kind", "s"), ("date", "date", "s"), ("user_id", "user", "s"), ("uname", "uname", "s"),
+                                          ("t", "t", "s"), ("late", "late", "b"), ("rows", "rows", "j")]),
+    "dbCorr": ("db_corrections", ("id",), [("id", "id", "i"), ("report_id", "report", "i"), ("pos_id", "pos", "s"), ("date", "date", "s"), ("field", "field", "s"),
+                                          ("value", "value", "f"), ("reason", "reason", "s"), ("user_id", "user", "s"), ("uname", "uname", "s"), ("t", "t", "s")]),
+    "dbExpl": ("db_explained", ("id",), [("id", "id", "i"), ("pos_id", "pos", "s"), ("date", "date", "s"), ("comment", "comment", "s"), ("user_id", "user", "s"),
+                                        ("uname", "uname", "s"), ("t", "t", "s")]),
     "ops": ("ops", ("id",), [("id", "id", "s"), ("no", "no", "s"), ("date", "date", "s"), ("kind", "kind", "s"), ("from_w", "from", "s"), ("to_w", "to", "s"),
                             ("contract", "contract", "s"), ("comment", "comment", "s"), ("leg1", "leg1", "j"), ("leg2", "leg2", "j"), ("same_cur", "sameCur", "b"),
-                            ("author", "author", "s"), ("created", "created", "s"), ("posted", "posted", "b"), ("deleted", "deleted", "b"), ("linked_doc", "linkedDoc", "s")]),
+                            ("author", "author", "s"), ("created", "created", "s"), ("posted", "posted", "b"), ("deleted", "deleted", "b"), ("linked_doc", "linkedDoc", "s"),
+                            ("xrate", "xrate", "f")]),
     "users": ("users", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("login", "login", "s"), ("email", "email", "s"), ("roles", "roles", "j"),
-                                ("wallets", "wallets", "j"), ("active", "active", "b"), ("lang", "lang", "s"), ("pw_salt", "_salt", "s"), ("pw_hash", "_hash", "s")]),
+                                ("wallets", "wallets", "j"), ("active", "active", "b"), ("lang", "lang", "s"), ("pw_salt", "_salt", "s"), ("pw_hash", "_hash", "s"),
+                                ("can_upload", "canUpload", "b")]),
     "exchangeLog": ("exchange_log", ("id",), [("id", "id", "i"), ("t", "t", "s"), ("u", "u", "s"), ("kind", "kind", "s"), ("file", "file", "s"), ("added", "added", "i"),
                                             ("updated", "updated", "i"), ("excluded", "excluded", "i"), ("errors", "errors", "i"), ("text", "text", "s")]),
     "closedChanges": ("closed_changes", ("id",), [("id", "id", "i"), ("t", "t", "s"), ("doc_id", "docId", "s"), ("doc_no", "docNo", "s"), ("date", "date", "s"),
@@ -101,15 +140,28 @@ DOC_COLS = [("id", "id", "s"), ("no", "no", "s"), ("source", "source", "s"), ("g
             ("date1c", "date1c", "s"), ("date", "date", "s"), ("org", "org", "s"), ("acc", "acc", "s"), ("cur", "cur", "s"), ("status", "status", "s"),
             ("status_raw", "statusRaw", "s"), ("approved", "approved", "b"), ("bank_done", "bankDone", "b"), ("bank_date", "bankDate", "s"),
             ("excluded", "excluded", "b"), ("deleted", "deleted", "b"), ("author", "author", "s"), ("created", "created", "s"), ("loaded", "loaded", "s"),
-            ("file_name", "fileName", "s"), ("file_sig", "fileSig", "s")]
+            ("file_name", "fileName", "s"), ("file_sig", "fileSig", "s"), ("erp_type", "erpType", "s"), ("stage", "stage", "s"), ("rate", "rate", "f"),
+            ("doc_sum", "docSum", "f"), ("fixed", "fixed", "j"), ("held", "held", "j"), ("review", "review", "j"), ("fmt", "fmt", "s")]
 LINE_COLS = [("sum", "sum", "f"), ("usd", "usd", "f"), ("wallet", "wallet", "s"), ("wsrc", "wsrc", "s"), ("rule", "rule", "s"), ("file_wallet", "fileWallet", "s"),
-             ("dept", "dept", "s"), ("cf", "cf", "s"), ("zone", "zone", "s"), ("cpty", "cpty", "s"), ("contract", "contract", "s"), ("purpose", "purpose", "s")]
+             ("dept", "dept", "s"), ("cf", "cf", "s"), ("zone", "zone", "s"), ("cpty", "cpty", "s"), ("contract", "contract", "s"), ("purpose", "purpose", "s"),
+             ("fixed", "fixed", "j")]
 
 DEFAULT_SETTINGS = {
     "startDate": "", "closedTo": "", "switchDate": "", "autoClose": True,
     "excludedOps": ["Конвертация валюты", "Перечисление на другой счёт", "Оплата в другую организацию группы", "Инкассация"],
+    # ТР-106: значения «Текущего этапа» и «Текущего состояния» ERP → смысл (approved | posted | notposted | deleted)
+    "stateMap": [],
+    # ТР-32, ТР-90: форма котировки поля «Курс» в отчёте ERP: perUsd — единиц валюты за 1 USD; usdPer — USD за 1 единицу
+    "rateForm": "perUsd",
+    # ТР-41…43: сверка с остатками 1С включается, когда в 1С появятся актуальные остатки
+    "recon1c": False,
+    # ТР-89: существенные изменения ERP в закрытом периоде держать до проверки (False — принимать сразу, предложение ТЗ)
+    "holdClosed": False,
+    # Daily Balance (ТР-91): контрольное время по Москве, календарь рабочих дней (ISO: 1 — пн … 7 — вс), допуск по валюте
+    "dbTime": "10:30", "dbTz": "Europe/Moscow", "dbWeekends": [6, 7], "dbHolidays": [], "dbWorkdays": [], "dbTol": {},
 }
 COLLECTIONS = list(TABLES) + ["docs"]
+IMMUTABLE = ("dbReports", "dbCorr", "dbExpl")
 
 
 def _to_db(v, t):
@@ -137,12 +189,37 @@ class Store:
         self.path = path
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
+        self._migrate_before()
         self.conn.executescript(SCHEMA)
+        self._migrate_after()
         self.lock = threading.RLock()
         self.version = 0
         self.cache = {}
         self._idx = {}
         self.load()
+
+    # ---------- миграции существующей базы ----------
+    ADD_COLS = [("accounts", "curs", "TEXT"), ("cashboxes", "curs", "TEXT"), ("users", "can_upload", "INTEGER"),
+                ("docs", "erp_type", "TEXT"), ("docs", "stage", "TEXT"), ("docs", "rate", "REAL"), ("docs", "doc_sum", "REAL"),
+                ("docs", "fixed", "TEXT"), ("docs", "held", "TEXT"), ("docs", "review", "TEXT"), ("docs", "fmt", "TEXT"),
+                ("doc_lines", "fixed", "TEXT"), ("opening", "cur", "TEXT"), ("ops", "xrate", "REAL")]
+
+    def _cols(self, table):
+        return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _migrate_before(self):
+        """Старая таблица bal1c без валюты: ключ становится дата × счёт × валюта (позиция)."""
+        c = self.conn
+        if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bal1c'").fetchone() and "cur" not in self._cols("bal1c"):
+            c.executescript("""ALTER TABLE bal1c RENAME TO bal1c_old;
+              CREATE TABLE bal1c(date TEXT NOT NULL, acc TEXT NOT NULL, cur TEXT NOT NULL DEFAULT '', sum REAL, PRIMARY KEY(date, acc, cur));
+              INSERT INTO bal1c(date, acc, cur, sum) SELECT b.date, b.acc, COALESCE((SELECT cur FROM accounts WHERE id=b.acc),(SELECT cur FROM cashboxes WHERE id=b.acc),''), b.sum FROM bal1c_old b;
+              DROP TABLE bal1c_old;""")
+
+    def _migrate_after(self):
+        for table, col, typ in self.ADD_COLS:
+            if col not in self._cols(table):
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
     # ---------- транзакции ----------
     @contextmanager
@@ -174,7 +251,7 @@ class Store:
         c = self.conn
         S = {}
         for coll, (table, _pk, cols) in TABLES.items():
-            order = " ORDER BY pos" if coll == "rules" else (" ORDER BY id" if coll in ("exchangeLog", "closedChanges") else "")
+            order = " ORDER BY pos" if coll == "rules" else (" ORDER BY id" if coll in ("exchangeLog", "closedChanges") + IMMUTABLE else "")
             rows = c.execute(f"SELECT {', '.join(col for col, _, _ in cols)} FROM {table}{order}").fetchall()
             S[coll] = [{key: _from_db(r[col], t) for col, key, t in cols} for r in rows]
         for u in S["users"]:
@@ -203,6 +280,21 @@ class Store:
             if tgt is not None:
                 tgt["versions"].append({"t": r["t"], "u": r["u"], "source": r["source"], "diff": r["diff"],
                                         "before": json.loads(r["before"] or "null"), "after": json.loads(r["after"] or "null")})
+        for d in docs.values():
+            for k in ("held", "review"):
+                if d.get(k) == []:
+                    d[k] = None
+        for a in S["accounts"] + S["cashboxes"]:
+            if not a.get("curs"):
+                a["curs"] = [a["cur"]] if a.get("cur") else []
+        accs = {a["id"]: a for a in S["accounts"] + S["cashboxes"]}
+        for coll in ("opening", "bal1c"):
+            for x in S[coll]:
+                if not x.get("cur") and accs.get(x["acc"]):
+                    x["cur"] = accs[x["acc"]]["cur"]
+        for x in S["dbDrafts"]:
+            if x.get("data") == []:
+                x["data"] = {}
         S["docs"] = list(docs.values())
         st = dict(DEFAULT_SETTINGS)
         for r in c.execute("SELECT key, value FROM settings").fetchall():
@@ -243,7 +335,7 @@ class Store:
             else:
                 vals.append(_to_db(obj.get(key), t))
         cur = self.conn.execute(f"INSERT OR REPLACE INTO {table}({', '.join(c for c, _, _ in cols)}) VALUES({', '.join('?' * len(cols))})", vals)
-        if coll in ("exchangeLog", "closedChanges") and obj.get("id") is None:
+        if coll in ("exchangeLog", "closedChanges") + IMMUTABLE and obj.get("id") is None:
             obj["id"] = cur.lastrowid
 
     def _save_doc(self, d):
@@ -318,8 +410,11 @@ class Store:
     def replace_all(self, data, keep_user=None):
         """Заменить все данные, кроме журнала аудита (ТР-46). Вызывается внутри tx()."""
         c = self.conn
+        old_immutable = {k: self.S.get(k, []) for k in IMMUTABLE}
+        # сданные отчёты Daily Balance, корректировки и «Объяснено» неизменяемы (ТР-96) и, как журнал аудита, не удаляются
         for table in ["doc_lines", "versions", "docs", "ops", "opening", "bal1c", "exchange_log", "closed_changes", "rules", "contracts",
-                      "wallets", "rates", "currencies", "orgs", "accounts", "cashboxes", "cf_types", "depts", "zones", "settings", "counters", "users"]:
+                      "wallets", "rates", "currencies", "orgs", "accounts", "cashboxes", "cf_types", "depts", "zones", "settings", "counters", "users",
+                      "mappings", "db_positions", "db_drafts"]:
             c.execute(f"DELETE FROM {table}")
         # сессия того, кто выполняет действие, сохраняется; остальные пользователи входят заново
         c.execute("DELETE FROM sessions WHERE user_id IS NOT ?", (keep_user["id"] if keep_user else None,))
@@ -333,7 +428,9 @@ class Store:
         for k, n in (data.get("counters") or {}).items():
             self.S["counters"][k] = n
             c.execute("INSERT INTO counters(prefix, n) VALUES(?, ?)", (k, n))
-        for coll in [x for x in TABLES if x != "users"] + ["docs"]:
+        for k in IMMUTABLE:
+            self.S[k] = old_immutable[k]
+        for coll in [x for x in TABLES if x != "users" and x not in IMMUTABLE] + ["docs"]:
             for obj in data.get(coll) or []:
                 if coll in ("exchangeLog", "closedChanges"):
                     obj = dict(obj); obj["id"] = None

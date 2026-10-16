@@ -6,7 +6,7 @@
 import json
 
 from .actions import ApiError, need_admin
-from .logic import DOC_TYPES, add_version, apply_rules, cur_code, doc_snap, in_closed, is_usd, nm, recon, to_usd
+from .logic import DOC_TYPES, acc_curs, add_version, apply_rules, cur_code, doc_snap, in_closed, is_usd, nm, recon, to_usd
 from .util import fmt, fmt_d, norm, now_iso, parse_date, parse_num, r2, txt, valid_iso
 import math
 
@@ -111,8 +111,9 @@ def norm_bool(v):
 
 def doc_sig(d):
     return json.dumps([d["type"], d["op"], d["no1c"], d["date"], d["org"], d["acc"], d["cur"], d["status"], d.get("approved") is not False, d["bankDone"],
-                       d.get("bankDate") or "", [[l["sum"], l["usd"], l.get("fileWallet") or "", l["dept"], l["cf"], l["zone"], l["cpty"], l["contract"], l["purpose"]]
-                                                 for l in d["lines"]]], ensure_ascii=False)
+                       d.get("bankDate") or "", d.get("stage") or "", d.get("erpType") or "", d.get("docSum"), d.get("rate"),
+                       [[l["sum"], l["usd"], l.get("fileWallet") or "", l["dept"], l["cf"], l["zone"], l["cpty"], l["contract"], l["purpose"]]
+                        for l in d["lines"]]], ensure_ascii=False)
 
 
 def line_sig(l):
@@ -133,85 +134,237 @@ def _sheets(p):
 
 
 # ======================= документы 1С =======================
+# ТР-90: отчёт ERP «История согласования» — 19 полей отчёта + 20-е «Тип расхода CF». Основной формат файла расходов.
+HIST_SPEC = {
+    "sum": ["Сумма"], "type": ["Тип"], "dept": ["Подразделение"], "purpose": ["Заметки"], "cpty": ["Получатель"], "org": ["Организация"],
+    "acc": ["Банк"], "cur": ["Валюта"], "docSum": ["Сумма документа"], "rate": ["Курс"], "zone": ["Зона ответственности"],
+    "stage": ["Текущий этап"], "state": ["Текущее состояние"], "no": ["Номер ERP"], "guid": ["GUID ERP"], "erpType": ["Тип документа ERP"],
+    "date": ["Дата документа ERP"], "bankDate": ["Дата проведения банком"], "op": ["Хозяйственная операция"], "cf": ["Тип расхода CF"],
+}
+HIST_REQ = ["sum", "type", "org", "acc", "cur", "docSum", "stage", "state", "guid", "date"]
+HIST_HEAD = ["Сумма", "Тип", "Подразделение", "Заметки", "Получатель", "Организация", "Банк", "Валюта", "Сумма документа", "Курс",
+             "Зона ответственности", "Текущий этап", "Текущее состояние", "Номер ERP", "GUID ERP", "Тип документа ERP", "Дата документа ERP",
+             "Дата проведения банком", "Хозяйственная операция", "Тип расхода CF"]
+FIELD_NAMES = {"guid": "GUID", "type": "тип", "op": "хоз. операция", "no": "номер ERP", "date": "дата", "org": "организация", "acc": "счёт",
+               "cur": "валюта", "status": "состояние", "stage": "этап", "state": "состояние ERP", "approved": "согласование", "bankDate": "дата проведения банком",
+               "sum": "сумма", "usd": "сумма USD", "docSum": "сумма документа", "rate": "курс", "dept": "подразделение", "cf": "тип расхода CF",
+               "zone": "зона", "cpty": "получатель", "contract": "договор", "purpose": "назначение", "erpType": "тип документа ERP", "wallet": "кошелёк"}
+REF_FIELDS = {"org": "orgs", "acc": "accs", "cur": "currencies", "dept": "depts", "cf": "cfTypes", "zone": "zones"}
+SIGNIFICANT = ("counted", "date", "org", "acc", "cur", "sum", "dept", "cf", "zone", "cpty")   # ТР-85: влияют на движение и распределение
+
+
+def mapped(C, kind, v):
+    """ТР-109: запомненное сопоставление названия из файла со справочником."""
+    if v is None or txt(v) == "":
+        return None
+    m = C.get_map(kind, norm(v)) if hasattr(C, "get_map") else next((x for x in C.S["mappings"] if x["kind"] == kind and x["rawNorm"] == norm(v)), None)
+    return m["target"] if m else None
+
+
+def name_matches(lst, v):
+    return [x for x in lst if norm(x.get("name")) == norm(v)] if txt(v) else []
+
+
+def ref_lookup(C, kind, lst, v, hit=None):
+    """Идентификатор → запомненное сопоставление (ТР-109) → однозначное совпадение по названию (ТР-90, поле 7) → код."""
+    if v is None or txt(v) == "":
+        return None
+    s_ = txt(v)
+    x = next((y for y in lst if y.get("id") == s_), None)
+    if x:
+        return x
+    t = mapped(C, kind, v)
+    if t:
+        x = next((y for y in lst if y["id"] == t), None)
+        if x:
+            if hit is not None:
+                hit.append(kind)
+            return x
+    by_name = name_matches(lst, v)
+    if len(by_name) == 1:
+        return by_name[0]
+    if len(by_name) > 1:
+        return None   # неоднозначно — ошибка в реестре, выбрать из справочника
+    return next((y for y in lst if y.get("code") and norm(y["code"]) == norm(s_)), None)
+
+
+def heur_state(v):
+    s = norm(v)
+    if not s:
+        return None
+    if "удал" in s:
+        return "deleted"
+    if "насоглас" in s or "ожидает" in s or "черновик" in s:
+        return "pending"
+    if "распровед" in s or "непровед" in s or "отклон" in s or "отмен" in s or "несоглас" in s:
+        return "notposted"
+    if "провед" in s or "оплач" in s or "исполн" in s:
+        return "posted"
+    if "соглас" in s or "утвержд" in s:
+        return "approved"
+    return None
+
+
+def map_state(C, stage, state):
+    """ТР-106: «Текущий этап» и «Текущее состояние» → состояние документа. Неизвестные значения — по смыслу слова, с предупреждением."""
+    table = {norm(x.get("value")): x.get("meaning") for x in C.S["settings"].get("stateMap") or [] if x.get("value")}
+    found, unknown = [], []
+    for v in (stage, state):
+        if txt(v) == "":
+            continue
+        k = norm(v)
+        if k in table:
+            found.append(table[k])
+        else:
+            unknown.append(txt(v)); found.append(heur_state(v))
+    if "deleted" in found:
+        return "Помечен на удаление", False, unknown
+    posted = "posted" in found and "notposted" not in found
+    approved = posted or "approved" in found
+    if posted:
+        return "Проведён", True, unknown
+    return ("Не проведён" if approved or "notposted" in found else "На согласовании"), approved, unknown
+
+
+def detect_format(rows):
+    hi = next((i for i, r in enumerate(rows) if r and any(txt(c) for c in r)), -1)
+    if hi < 0:
+        return "hist"
+    head = {norm(c) for c in rows[hi]}
+    return "hist" if ("guiderp" in head or "текущеесостояние" in head or "банк" in head) else "tr61"
+
+
+def _num(v):
+    return parse_num(v) if txt(v) != "" else float("nan")
+
+
 def preview_exp(C, p):
     sheets = _sheets(p)
-    sh = next((s_ for s_ in sheets if not [k for k in map_header(s_["rows"], EXP_SPEC)[2] if k in EXP_REQ]), sheets[0])
-    hi, m, missing = map_header(sh["rows"], EXP_SPEC)
-    errors, warns, skip70, skip_out = [], [], [], []
-    miss = [k for k in missing if k in EXP_REQ]
-    empty = {"errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [], "upd": [], "same": [], "exc": [], "closed": [],
-             "allOrgs": [], "rows": 0, "sel": p.get("sel")}
+    fixes = p.get("fixes") or {}
+    fmt_ = detect_format(sheets[0]["rows"])
+    SPEC, REQ = (HIST_SPEC, HIST_REQ) if fmt_ == "hist" else (EXP_SPEC, EXP_REQ)
+    sh = next((s_ for s_ in sheets if not [k for k in map_header(s_["rows"], SPEC)[2] if k in REQ]), sheets[0])
+    hi, m, missing = map_header(sh["rows"], SPEC)
+    errors, warns, skip70, skip_out, registry = [], [], [], [], []
+    miss = [k for k in missing if k in REQ]
+    empty = {"format": fmt_, "errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [], "upd": [], "same": [], "exc": [], "closed": [],
+             "allOrgs": [], "rows": 0, "sel": p.get("sel"), "registry": [], "unmapped": [], "significant": []}
     if miss:
-        errors.append({"row": hi + 1, "msg": "Нет обязательных колонок: " + ", ".join(EXP_SPEC[k][0] for k in miss)})
+        errors.append({"row": hi + 1, "msg": "Нет обязательных колонок: " + ", ".join(SPEC[k][0] for k in miss)})
         return empty, None
     S = C.S
     accs = S["accounts"] + S["cashboxes"]
     excl = {norm(x) for x in S["settings"].get("excludedOps") or []}
-    rows = []
+    rate_form = S["settings"].get("rateForm") or "perUsd"
+    rows, unmapped = [], set()
     for i, r in enumerate(sh["rows"][hi + 1:]):
         if not r or not any(txt(c) for c in r):
             continue
         n = hi + 2 + i
-        g = lambda k: cell(r, m, k)
-        R = {"n": n, "guid": txt(g("guid")), "type": norm_type(g("type")), "typeRaw": txt(g("type")), "op": txt(g("op")), "no": txt(g("no")),
-             "date": parse_date(g("date")), "orgR": find_ref(S["orgs"], g("org")), "orgRaw": txt(g("org")), "accR": find_ref(accs, g("acc")),
-             "accRaw": txt(g("acc")), "curRaw": txt(g("cur")), "statusRaw": txt(g("status")), "status": norm_status(g("status")),
-             "approved": True if txt(g("approved")) == "" else norm_bool(g("approved")), "bank": norm_bool(g("bank")),
-             "bankDate": parse_date(g("bankDate")), "sum": parse_num(g("sum")), "usdRaw": g("usd"), "walletRaw": txt(g("wallet")),
+        fx = fixes.get(str(n)) or {}
+        raw = {k: (fx[k] if k in fx else cell(r, m, k)) for k in SPEC}
+        g = lambda k: raw.get(k)
+        R = {"n": n, "fmt": fmt_, "fixed": sorted(k for k in fx if k in SPEC), "raw": {k: ("" if v is None else str(v)) for k, v in raw.items()},
+             "orig": {k: ("" if cell(r, m, k) is None else str(cell(r, m, k))) for k in fx if k in SPEC},
+             "guid": txt(g("guid")), "type": norm_type(g("type")), "typeRaw": txt(g("type")), "op": txt(g("op")), "no": txt(g("no")),
+             "date": parse_date(g("date")), "orgRaw": txt(g("org")), "accRaw": txt(g("acc")), "curRaw": txt(g("cur")),
+             "bankDate": parse_date(g("bankDate")), "sum": parse_num(g("sum")), "wallet": None, "walletRaw": txt(g("wallet")),
              "dept": txt(g("dept")), "cf": txt(g("cf")), "zone": txt(g("zone")), "cpty": txt(g("cpty")), "contract": txt(g("contract")),
-             "purpose": txt(g("purpose")), "errs": []}
+             "purpose": txt(g("purpose")), "erpType": txt(g("erpType")), "stage": txt(g("stage")), "stateRaw": txt(g("state") if fmt_ == "hist" else g("status")),
+             "errs": [], "warns": []}
+        R["mapped"] = []
+        R["orgR"] = ref_lookup(C, "org", S["orgs"], g("org"), R["mapped"])
+        R["accR"] = ref_lookup(C, "acc", accs, g("acc"), R["mapped"])
 
-        def E(msg, R=R, n=n):
-            R["errs"].append(msg); errors.append({"row": n, "msg": msg})
-        if not R["guid"]: E("пустой GUID документа")
-        if not R["type"]: E(f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС, РКО, ПБДС или ПКО")
-        if not R["date"]: E("неверная дата")
-        if not R["orgR"]: E(f"неизвестная организация «{R['orgRaw']}»")
-        if not R["accR"]: E(f"неизвестный счёт или касса «{R['accRaw']}»")
+        def E(msg, f=None, R=R, n=n):
+            R["errs"].append({"f": f, "msg": msg}); errors.append({"row": n, "msg": msg})
+        if not R["guid"]: E("пустой GUID документа", "guid")
+        if not R["type"]: E(f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС или РКО" if fmt_ == "hist" else f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС, РКО, ПБДС или ПКО", "type")
+        if not R["date"]: E("неверная дата", "date")
+        if not R["orgR"]:
+            amb = name_matches(S["orgs"], g("org"))
+            E(f"организация «{R['orgRaw']}» неоднозначна: {len(amb)} совпадения в справочнике — выберите" if len(amb) > 1 else f"неизвестная организация «{R['orgRaw']}»", "org")
+        if not R["accR"]:
+            amb = name_matches(accs, g("acc"))
+            E(f"счёт «{R['accRaw']}» неоднозначен: {len(amb)} счёта с таким названием — выберите из справочника (ТР-90)" if len(amb) > 1 else f"неизвестный счёт или касса «{R['accRaw']}»", "acc")
         if R["accR"] and R["orgR"] and R["accR"]["org"] != R["orgR"]["id"]:
-            E(f"счёт «{R['accR']['name']}» не принадлежит организации «{R['orgR']['name']}»")
+            E(f"счёт «{R['accR']['name']}» не принадлежит организации «{R['orgR']['name']}»", "acc")
         if R["accR"] and R["type"]:
             is_cash = any(c["id"] == R["accR"]["id"] for c in S["cashboxes"])
-            if DOC_TYPES[R["type"]]["cash"] and not is_cash: E(f"{R['type']} должен быть по кассе")
-            if not DOC_TYPES[R["type"]]["cash"] and is_cash: E(f"{R['type']} должен быть по банковскому счёту")
+            if DOC_TYPES[R["type"]]["cash"] and not is_cash: E(f"{R['type']} должен быть по кассе", "acc")
+            if not DOC_TYPES[R["type"]]["cash"] and is_cash: E(f"{R['type']} должен быть по банковскому счёту", "acc")
+        R["cur"] = None
         if R["curRaw"]:
-            c = find_ref(S["currencies"], R["curRaw"])
-            if not c: E(f"неизвестная валюта «{R['curRaw']}»")
-            elif R["accR"] and c["id"] != R["accR"]["cur"]: E(f"валюта {R['curRaw']} не совпадает с валютой счёта ({cur_code(C, R['accR']['cur'])})")
-        if not math.isfinite(R["sum"]): E("пустая или неверная сумма")
-        elif R["sum"] <= 0: E("сумма должна быть больше нуля")
+            c = ref_lookup(C, "cur", S["currencies"], R["curRaw"], R["mapped"])
+            if not c: E(f"неизвестная валюта «{R['curRaw']}»", "cur")
+            elif R["accR"] and c["id"] not in acc_curs(R["accR"]): E(f"валюты {R['curRaw']} нет у счёта «{R['accR']['name']}» ({', '.join(cur_code(C, x) for x in acc_curs(R['accR']))})", "cur")
+            else: R["cur"] = c["id"]
+        elif R["accR"]:
+            if len(acc_curs(R["accR"])) == 1: R["cur"] = acc_curs(R["accR"])[0]
+            else: E("не указана валюта мультивалютного счёта", "cur")
+        if not math.isfinite(R["sum"]): E("пустая или неверная сумма", "sum")
+        elif R["sum"] <= 0: E("сумма должна быть больше нуля", "sum")
+        # состояние (ТР-106 / ТР-07)
+        if fmt_ == "hist":
+            R["status"], R["approved"], unk = map_state(C, g("stage"), g("state"))
+            for x in unk:   # ТР-106: значение не задано в таблице соответствия — загрузка блокируется до сопоставления
+                unmapped.add(x)
+                E(f"значение «{x}» не задано в таблице соответствия состояний ERP (ТР-106)", "state")
+            R["stateGuess"] = {x: heur_state(x) for x in unk}
+            R["docSum"] = _num(g("docSum"))
+            if not math.isfinite(R["docSum"]): E("пустая или неверная сумма документа", "docSum")
+            rr = _num(g("rate"))
+            R["rate"] = None
+            if math.isfinite(rr) and rr > 0:
+                R["rate"] = rr if rate_form == "perUsd" else 1 / rr
+            elif txt(g("rate")) != "":
+                E("неверный курс", "rate")
+            R["usdRaw"] = None
+        else:
+            R["status"] = norm_status(g("status"))
+            R["approved"] = True if txt(g("approved")) == "" else norm_bool(g("approved"))
+            R["docSum"] = float("nan"); R["rate"] = None; R["usdRaw"] = g("usd")
         R["usd"] = None
-        if txt(R["usdRaw"]) != "":
+        if R.get("usdRaw") not in (None, "") and txt(R["usdRaw"]) != "":
             R["usd"] = parse_num(R["usdRaw"])
-            if not math.isfinite(R["usd"]): E("неверная сумма в USD")
-        elif R["accR"] and R["date"] and math.isfinite(R["sum"]):
-            R["usd"] = to_usd(C, R["sum"], R["accR"]["cur"], R["date"])
-            if R["usd"] is None: E(f"нет суммы в USD и нет курса {cur_code(C, R['accR']['cur'])} на {fmt_d(R['date'])}")
-        R["wallet"] = None
+            if not math.isfinite(R["usd"]): E("неверная сумма в USD", "usd")
+        elif R["cur"] and R["date"] and math.isfinite(R["sum"]):
+            R["usd"] = to_usd(C, R["sum"], R["cur"], R["date"], R.get("rate"))
+            if R["usd"] is None: E(f"нет курса в файле и нет курса ERP {cur_code(C, R['cur'])} на {fmt_d(R['date'])}", "rate")
         if R["walletRaw"]:
             w = find_ref(S["wallets"], R["walletRaw"])
-            if not w: E(f"неизвестный кошелёк «{R['walletRaw']}»")
+            if not w: E(f"неизвестный кошелёк «{R['walletRaw']}»", "wallet")
             else: R["wallet"] = w["id"]
-        for k, lst, t in (("dept", S["depts"], "подразделение"), ("cf", S["cfTypes"], "тип расхода CF"), ("zone", S["zones"], "зона ответственности")):
+        for k, kind, lst, t in (("dept", "dept", S["depts"], "подразделение"), ("cf", "cf", S["cfTypes"], "тип расхода CF"), ("zone", "zone", S["zones"], "зона ответственности")):
             if not R[k]:
                 continue
-            x = find_ref(lst, R[k])
+            x = ref_lookup(C, kind, lst, R[k], R["mapped"])
             if x:
                 R[k] = x["id"]
             else:
                 warns.append({"row": n, "msg": f"{t} «{R[k]}» нет в справочнике — строка загрузится, ссылка подтянется после загрузки справочника (ТР-17)"})
+                R["warns"].append({"f": k, "msg": f"{t} «{R[k]}» нет в справочнике"})
                 R[k] = "?" + R[k]
         rows.append(R)
+    # дубли GUID и контроль «сумма строк = сумме документа» (ТР-90, поле 9)
     by_g = {}
     for R in rows:
         if R["guid"]:
             by_g.setdefault(R["guid"], []).append(R)
-    for g, lst in by_g.items():
-        h = lambda R: (R["type"], R["no"], R["date"], R["orgR"] and R["orgR"]["id"], R["accR"] and R["accR"]["id"], R["status"], R["approved"], R["bank"], R["op"])
+    for g_, lst in by_g.items():
+        h = lambda R: (R["type"], R["no"], R["date"], R["orgR"] and R["orgR"]["id"], R["accR"] and R["accR"]["id"], R["cur"], R["status"], R["approved"], R["op"],
+                       R["bankDate"], None if not math.isfinite(R.get("docSum", float("nan"))) else R["docSum"])
         if len({h(R) for R in lst}) > 1:
             for R in lst:
-                R["errs"].append("дубль GUID")
-                errors.append({"row": R["n"], "msg": f"дубль GUID «{g}»: строки одного документа с разными реквизитами"})
+                R["errs"].append({"f": "guid", "msg": "дубль GUID: строки одного документа с разными реквизитами"})
+                errors.append({"row": R["n"], "msg": f"дубль GUID «{g_}»: строки одного документа с разными реквизитами"})
+        ds = lst[0].get("docSum")
+        if lst[0]["fmt"] == "hist" and ds is not None and math.isfinite(ds) and all(math.isfinite(R["sum"]) for R in lst):
+            tot = r2(sum(R["sum"] for R in lst))
+            if abs(tot - r2(ds)) >= 0.005:
+                for R in lst:
+                    R["errs"].append({"f": "docSum", "msg": f"сумма строк {fmt(tot)} ≠ сумме документа {fmt(ds)}"})
+                    errors.append({"row": R["n"], "msg": f"GUID «{g_}»: сумма строк {fmt(tot)} ≠ сумме документа {fmt(ds)}"})
     all_orgs = list(dict.fromkeys(R["orgR"]["id"] for R in rows if R["orgR"]))
     dates = sorted(R["date"] for R in rows if R["date"])
     sel = p.get("sel") or {}
@@ -222,39 +375,60 @@ def preview_exp(C, p):
     st = S["settings"]
     docs = {}
     for R in rows:
+        R["st"] = "error" if R["errs"] else None
         if R["errs"]:
             continue
         if R["orgR"]["id"] not in sel_orgs or (sel["from"] and R["date"] < sel["from"]) or (sel["to"] and R["date"] > sel["to"]):
-            skip_out.append({"row": R["n"], "guid": R["guid"], "why": "вне выбранных организаций или дат"}); continue
+            R["st"], R["why"] = "skipped", "вне выбранных организаций или дат"
+            skip_out.append({"row": R["n"], "guid": R["guid"], "why": R["why"]}); continue
         if st.get("startDate") and R["date"] < st["startDate"]:
-            skip_out.append({"row": R["n"], "guid": R["guid"], "why": f"раньше начала учёта {fmt_d(st['startDate'])} (ТР-21)"}); continue
+            R["st"], R["why"] = "skipped", f"раньше начала учёта {fmt_d(st['startDate'])} (ТР-21)"
+            skip_out.append({"row": R["n"], "guid": R["guid"], "why": R["why"]}); continue
         sw = st.get("switchDate")
         before_switch = not sw or R["date"] < sw
         if R["type"] in ("ПБДС", "ПКО") and before_switch:
-            skip_out.append({"row": R["n"], "guid": R["guid"], "why": "поступления до даты перехода на автообмен вводятся вручную"}); continue
+            R["st"], R["why"] = "skipped", "поступления до даты перехода на автообмен вводятся вручную (ТР-72)"
+            skip_out.append({"row": R["n"], "guid": R["guid"], "why": R["why"]}); continue
         if R["op"] and norm(R["op"]) in excl and before_switch:
-            skip70.append({"row": R["n"], "guid": R["guid"], "op": R["op"], "sum": R["sum"], "cur": R["accR"]["cur"], "org": R["orgR"]["id"]}); continue
+            R["st"], R["why"] = "skipped", f"хоз. операция «{R['op']}» введена вручную (ТР-70)"
+            skip70.append({"row": R["n"], "guid": R["guid"], "op": R["op"], "sum": R["sum"], "cur": R["cur"], "org": R["orgR"]["id"]}); continue
         d = docs.get(R["guid"])
         if not d:
-            d = {"guid": R["guid"], "source": "file", "type": R["type"], "op": R["op"], "no1c": R["no"], "date": R["date"], "date1c": "", "org": R["orgR"]["id"],
-                 "acc": R["accR"]["id"], "cur": R["accR"]["cur"], "status": R["status"], "statusRaw": R["statusRaw"],
-                 "approved": R["approved"] if R["type"] == "СБДС" else True, "bankDone": R["bank"] if R["type"] == "СБДС" else False,
-                 "bankDate": (R["bankDate"] or "") if R["type"] == "СБДС" and R["bank"] else "", "lines": []}
+            d = {"guid": R["guid"], "source": "file", "fmt": R["fmt"], "type": R["type"], "op": R["op"], "no1c": R["no"], "date": R["date"], "date1c": "",
+                 "org": R["orgR"]["id"], "acc": R["accR"]["id"], "cur": R["cur"], "status": R["status"], "statusRaw": R["stateRaw"], "stage": R["stage"],
+                 "erpType": R["erpType"], "approved": R["approved"] if R["type"] == "СБДС" else True,
+                 "bankDone": bool(R["bankDate"]) if R["type"] == "СБДС" else False,      # ТР-09: признак = дата заполнена
+                 "bankDate": (R["bankDate"] or "") if R["type"] == "СБДС" else "",
+                 "docSum": r2(R["docSum"]) if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "lines": [], "_rows": [], "fixed": []}
             docs[R["guid"]] = d
+        d["_rows"].append(R)
+        d["fixed"] += [f for f in R["fixed"] if f in ("type", "op", "no", "date", "org", "acc", "cur", "stage", "state", "status", "bankDate", "docSum", "rate", "erpType", "guid")]
         d["lines"].append({"sum": r2(R["sum"]), "usd": r2(R["usd"]), "fileWallet": R["wallet"], "wallet": R["wallet"], "wsrc": "file" if R["wallet"] else None, "rule": None,
-                           "dept": R["dept"], "cf": R["cf"], "zone": R["zone"], "cpty": R["cpty"], "contract": R["contract"], "purpose": R["purpose"]})
-    add, upd, same, exc, closed = [], [], [], [], []
+                           "dept": R["dept"], "cf": R["cf"], "zone": R["zone"], "cpty": R["cpty"], "contract": R["contract"], "purpose": R["purpose"],
+                           "fixed": [f for f in R["fixed"] if f in ("sum", "dept", "cf", "zone", "cpty", "purpose", "contract", "usd", "wallet")]})
+    add, upd, same, exc, closed, signif = [], [], [], [], [], []
     existing = {d["guid"]: d for d in S["docs"] if d["source"] == "file"}
     for d in docs.values():
+        d["fixed"] = sorted(set(d["fixed"]))
         e = existing.get(d["guid"])
         d["sig"] = doc_sig(d)
         if not e:
             add.append(d)
+            for R in d["_rows"]: R["st"] = "new"
             if in_closed(C, d["date"]): closed.append(d["guid"])
         elif e.get("fileSig") == d["sig"] and not e.get("excluded"):
             same.append(d)
+            for R in d["_rows"]: R["st"] = "same"
         else:
             upd.append((d, e))
+            ch_doc = doc_changes(C, e, d)
+            for i, R in enumerate(d["_rows"]):
+                R["st"] = "changed"
+                R["changes"] = (ch_doc if i == 0 else []) + line_changes(C, e["lines"][i] if i < len(e["lines"]) else None, d["lines"][i], i)
+            if len(e["lines"]) > len(d["lines"]):
+                d["_rows"][0]["changes"].append({"f": "lines", "before": str(len(e["lines"])), "after": str(len(d["lines"]))})
+            if is_significant(C, e, d):
+                signif.append(d["guid"])
             if in_closed(C, e["date"]) or in_closed(C, d["date"]): closed.append(d["guid"])
     for e in existing.values():
         if e.get("excluded") or e["guid"] in docs:
@@ -262,32 +436,141 @@ def preview_exp(C, p):
         if e["org"] in sel_orgs and (not sel["from"] or e["date"] >= sel["from"]) and (not sel["to"] or e["date"] <= sel["to"]):
             exc.append(e)
             if in_closed(C, e["date"]): closed.append(e["guid"])
-    pv = {"errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [d["guid"] for d in add], "upd": [d["guid"] for d, _ in upd],
-          "same": [d["guid"] for d in same], "closed": closed, "allOrgs": all_orgs, "rows": len(rows), "sel": sel,
+    for R in rows:
+        registry.append(reg_row(C, R))
+    for e in exc:   # «Исключится» — построчно (ТР-62)
+        for i, l in enumerate(e["lines"]):
+            registry.append({"n": None, "st": "excluded", "guid": e["guid"], "no": e.get("no1c"), "type": e["type"], "date": e["date"], "org": e["org"], "acc": e["acc"],
+                             "cur": e["cur"], "sum": l.get("sum"), "dept": l.get("dept"), "cf": l.get("cf"), "cpty": l.get("cpty"), "purpose": l.get("purpose"),
+                             "state": e.get("status"), "why": "документа нет в файле за выбранный период", "errs": [], "warns": [], "fixed": [], "raw": {}})
+    pv = {"format": fmt_, "errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [d["guid"] for d in add], "upd": [d["guid"] for d, _ in upd],
+          "same": [d["guid"] for d in same], "closed": closed, "allOrgs": all_orgs, "rows": len(rows), "sel": sel, "registry": registry,
+          "unmapped": sorted(unmapped), "significant": signif,
           "exc": [{"date": e["date"], "type": e["type"], "no1c": e["no1c"], "guid": e["guid"], "cur": e["cur"], "total": r2(sum(l["sum"] for l in e["lines"]))} for e in exc]}
-    return pv, {"add": add, "upd": upd, "exc": exc, "same": same, "sel": sel}
+    return pv, {"add": add, "upd": upd, "exc": exc, "same": same, "sel": sel, "rows": rows}
+
+
+def reg_row(C, R):
+    """Строка реестра предпросмотра (ТР-108): исходные значения для правки, найденные ссылки, ошибки, изменения."""
+    return {"n": R["n"], "st": R.get("st") or "error", "why": R.get("why", ""), "guid": R["guid"], "no": R["no"], "type": R["type"] or R["typeRaw"],
+            "date": R["date"], "org": R["orgR"] and R["orgR"]["id"], "acc": R["accR"] and R["accR"]["id"], "cur": R["cur"], "sum": R["sum"] if math.isfinite(R["sum"]) else None,
+            "docSum": R["docSum"] if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "state": R.get("status"), "stage": R.get("stage"),
+            "stateRaw": R.get("stateRaw"), "bankDate": R.get("bankDate"), "op": R["op"], "dept": R["dept"], "cf": R["cf"], "zone": R["zone"], "cpty": R["cpty"],
+            "purpose": R["purpose"], "erpType": R.get("erpType"), "errs": R["errs"], "warns": R["warns"], "fixed": R["fixed"], "raw": R["raw"],
+            "changes": R.get("changes", []), "fmt": R["fmt"], "orig": R.get("orig", {}), "mapped": R.get("mapped", []), "stateGuess": R.get("stateGuess", {})}
+
+
+def _show(C, f, v):
+    if v in (None, ""):
+        return "—"
+    if f in ("date", "bankDate"):
+        return fmt_d(v)
+    if f in ("sum", "usd", "docSum"):
+        return fmt(v)
+    if f == "org":
+        return nm(C.get("orgs", v))
+    if f == "acc":
+        return nm(C.acc(v))
+    if f == "cur":
+        return cur_code(C, v)
+    if f in ("dept", "cf", "zone"):
+        coll = {"dept": "depts", "cf": "cfTypes", "zone": "zones"}[f]
+        x = C.get(coll, v)
+        return x["name"] if x else str(v).lstrip("?")
+    return str(v)
+
+
+def doc_changes(C, e, d):
+    out = []
+    for f, k in (("type", "type"), ("op", "op"), ("no", "no1c"), ("date", "date"), ("org", "org"), ("acc", "acc"), ("cur", "cur"), ("state", "status"),
+                 ("approved", "approved"), ("bankDate", "bankDate"), ("erpType", "erpType"), ("stage", "stage"), ("docSum", "docSum"), ("rate", "rate")):
+        a, b = e.get(k), d.get(k)
+        if (a or None) != (b or None) and not (isinstance(a, float) and isinstance(b, float) and abs(a - b) < 1e-9):
+            out.append({"f": f, "before": _show(C, k, a), "after": _show(C, k, b)})
+    return out
+
+
+def line_changes(C, o, l, i):
+    if o is None:
+        return [{"f": "line", "before": "—", "after": f"новая строка {i + 1}"}]
+    out = []
+    for f in ("sum", "usd", "dept", "cf", "zone", "cpty", "purpose", "contract"):
+        a, b = o.get(f), l.get(f)
+        if (a or None) != (b or None) and not (isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) < 0.005):
+            out.append({"f": f, "before": _show(C, f, a), "after": _show(C, f, b)})
+    return out
+
+
+def move_of(C, d, counted):
+    return {"counted": counted, "date": d["date"], "org": d["org"], "acc": d["acc"], "cur": d.get("cur"),
+            "sum": [r2(l.get("sum") or 0) for l in d["lines"]], "dept": [l.get("dept") for l in d["lines"]], "cf": [l.get("cf") for l in d["lines"]],
+            "zone": [l.get("zone") for l in d["lines"]], "cpty": [norm(l.get("cpty")) for l in d["lines"]]}
+
+
+def would_count(C, d):
+    from .logic import doc_counts
+    return doc_counts(C, dict(d, excluded=False, deleted=False))
+
+
+def is_significant(C, e, d):
+    """ТР-85: отмена в ERP или изменение реквизитов, влияющих на движение и распределение по кошелькам."""
+    from .logic import doc_counts
+    if not (doc_counts(C, e) or e.get("held")):
+        return False
+    base = dict(e, **e["held"]) if e.get("held") else e
+    a, b = move_of(C, base, True), move_of(C, d, would_count(C, d))
+    return any(a[k] != b[k] for k in SIGNIFICANT)
+
+
+def significant_diff(C, before, after):
+    out = []
+    for f in ("date", "org", "acc", "cur", "status", "approved"):
+        if (before.get(f) or None) != (after.get(f) or None):
+            out.append({"f": f, "before": _show(C, f, before.get(f)), "after": _show(C, f, after.get(f))})
+    bl, al = before.get("lines") or [], after.get("lines") or []
+    for i in range(max(len(bl), len(al))):
+        o, l = (bl[i] if i < len(bl) else {}), (al[i] if i < len(al) else {})
+        for f in ("sum", "dept", "cf", "zone", "cpty"):
+            if (o.get(f) or None) != (l.get(f) or None) and not (f == "sum" and o.get(f) is not None and l.get(f) is not None and abs(o[f] - l[f]) < 0.005):
+                out.append({"f": f, "line": i + 1, "before": _show(C, f, o.get(f)), "after": _show(C, f, l.get(f))})
+    return out
 
 
 def apply_exp(C, u, p, file_name):
-    need_admin(u)
+    need_upload(u)
     pv, work = preview_exp(C, p)
     if pv["errors"]:
-        raise ApiError(["Файл с ошибками целиком не загружается (ТР-63)."])
+        raise ApiError(["Реестр с ошибками не загружается: исправьте ошибки в реестре — частичная загрузка запрещена (ТР-108, ТР-110)."])
+    from .logic import doc_counts, movement_snap, diff_text
     now = now_iso()
     src = f"файл {file_name}"
+    st = C.S["settings"]
 
     def closed_note(d, diff):
         if in_closed(C, d["date"]):
             C.st.add("closedChanges", {"id": None, "t": now, "docId": d["id"], "docNo": f"{d['type']} {d['no1c']} ({d['guid']})", "date": d["date"], "diff": diff, "seen": []})
+
+    def audit_fixes(d):
+        # ТР-109: исправленные в реестре ячейки — в журнал аудита (было/стало)
+        for R in d.get("_rows", []):
+            for f in R["fixed"]:
+                C.st.audit(u, "Исправление в реестре загрузки", f"{d['type']} {d['no1c']} ({d['guid']}), строка файла {R['n']}",
+                           f"{FIELD_NAMES.get(f, f)}: «{R['orig'].get(f, '')}» → «{R['raw'].get(f, '')}»")
     from .util import uid
+    held_n = 0
     for n in work["add"]:
-        d = dict(n, id=uid("D"), no="", excluded=False, deleted=False, versions=[], loaded=now, fileName=file_name, fileSig=n["sig"], author="", created=now)
-        d.pop("sig", None)
+        d = dict(n, id=uid("D"), no="", excluded=False, deleted=False, versions=[], loaded=now, fileName=file_name, fileSig=n["sig"], author="", created=now,
+                 held=None, review=None)
+        d.pop("sig", None); rows_ = d.pop("_rows", [])
         apply_rules(C, d)
         C.st.add("docs", d)
         closed_note(d, "новый документ")
+        audit_fixes(dict(d, _rows=rows_))
     for n, e in work["upd"]:
         before = doc_snap(C, e)
+        was_counted = doc_counts(C, e)
+        prev_move = e.get("held") or (movement_snap(C, e) if was_counted else None)
+        significant = is_significant(C, e, n)
         keep = len(e["lines"]) == len(n["lines"])
         lines = []
         for i, l in enumerate(n["lines"]):
@@ -296,15 +579,26 @@ def apply_exp(C, u, p, file_name):
                 lines.append(dict(l, wallet=o["wallet"], wsrc=o["wsrc"], rule=o.get("rule")))
             else:
                 lines.append(dict(l))
-        for k in ("type", "op", "no1c", "date", "org", "acc", "cur", "status", "statusRaw", "approved", "bankDone", "bankDate"):
-            e[k] = n[k]
-        e.update(lines=lines, excluded=False, loaded=now, fileName=file_name, fileSig=n["sig"])
+        for k in ("type", "op", "no1c", "date", "org", "acc", "cur", "status", "statusRaw", "approved", "bankDone", "bankDate", "stage", "erpType", "docSum", "rate", "fmt"):
+            e[k] = n.get(k)
+        e.update(lines=lines, excluded=False, loaded=now, fileName=file_name, fileSig=n["sig"], fixed=n.get("fixed") or [])
         apply_rules(C, e)
+        closed_doc = in_closed(C, e["date"]) or (prev_move and in_closed(C, prev_move["date"]))
+        # ТР-85: существенное изменение уже учтённого документа — до проверки казначеем в расчёте остаётся прежнее движение.
+        # ТР-89: в закрытом периоде изменения ERP принимаются сразу (если в настройках не включено удержание).
+        if significant and prev_move and prev_move.get("counted") and (not closed_doc or st.get("holdClosed")):
+            e["held"] = prev_move
+            e["review"] = {"t": now, "file": file_name, "diff": significant_diff(C, prev_move, movement_snap(C, e))}
+            held_n += 1
+        elif not significant and e.get("held"):
+            e["review"] = dict(e.get("review") or {}, t=now, file=file_name, diff=significant_diff(C, e["held"], movement_snap(C, e)))
         C.st.save("docs", e)
         after = doc_snap(C, e)
-        from .logic import diff_text
         add_version(C, "doc", e, before, after, src, u)
         closed_note(e, diff_text(before, after))
+        audit_fixes(n)
+    for n in work["same"]:
+        audit_fixes(n)
     for e in work["exc"]:
         before = doc_snap(C, e)
         e["excluded"] = True
@@ -312,12 +606,21 @@ def apply_exp(C, u, p, file_name):
         add_version(C, "doc", e, before, doc_snap(C, e), src + " — нет в файле", u)
         closed_note(e, "исключён: нет в загрузке")
     sel = work["sel"]
-    C.st.add("exchangeLog", {"id": None, "t": now, "u": u["id"], "kind": KIND_NAMES["exp"], "file": file_name, "added": len(work["add"]), "updated": len(work["upd"]),
-                             "excluded": len(work["exc"]), "errors": 0,
+    C.st.add("exchangeLog", {"id": None, "t": now, "u": u["id"], "kind": KIND_NAMES["exp"] + (" (История согласования)" if pv["format"] == "hist" else ""), "file": file_name,
+                             "added": len(work["add"]), "updated": len(work["upd"]), "excluded": len(work["exc"]), "errors": 0,
                              "text": f"Организации: {', '.join(nm(C.get('orgs', o)) for o in sel['orgs'])}; период {fmt_d(sel['from'])}–{fmt_d(sel['to'])}; "
-                                     f"без изменений: {len(work['same'])}; пропущено по ТР-70: {len(pv['skip70'])}" + (f"; предупреждений: {len(pv['warns'])}" if pv["warns"] else "")})
-    C.st.audit(u, "Загрузка файла", file_name, f"документы: добавлено {len(work['add'])}, изменено {len(work['upd'])}, исключено {len(work['exc'])}, без изменений {len(work['same'])}")
-    return {"added": len(work["add"]), "updated": len(work["upd"]), "excluded": len(work["exc"])}
+                                     f"без изменений: {len(work['same'])}; пропущено по ТР-70: {len(pv['skip70'])}; на проверку казначею (ТР-85): {held_n}"
+                                     + (f"; предупреждений: {len(pv['warns'])}" if pv["warns"] else "")})
+    C.st.audit(u, "Загрузка файла", file_name, f"документы: добавлено {len(work['add'])}, изменено {len(work['upd'])}, исключено {len(work['exc'])}, без изменений {len(work['same'])}, на проверку {held_n}")
+    return {"added": len(work["add"]), "updated": len(work["upd"]), "excluded": len(work["exc"]), "held": held_n}
+
+
+def need_upload(u):
+    """ТР-60: загружает администратор или казначей с правом загрузки."""
+    from .logic import is_admin, has
+    if not (is_admin(u) or (has(u, "treasurer") and u.get("canUpload"))):
+        from .actions import Forbidden
+        raise Forbidden("Загрузка файлов доступна администратору и казначею с правом загрузки")
 
 
 # ======================= справочники и курсы =======================
@@ -375,10 +678,13 @@ def preview_ref(C, p):
                     item["code"] = code or (item["name"].upper() if len(item["name"]) == 3 and item["name"].isascii() and item["name"].isalpha()
                                             else id_.upper() if len(id_) == 3 and id_.isascii() and id_.isalpha() else "")
                 if kind in ("accounts", "cashboxes"):
-                    o, c = find_ref(T["orgs"], g("org")), find_ref(T["currencies"], g("cur"))
+                    o = find_ref(T["orgs"], g("org"))
                     if not o: E(f"неизвестная организация «{txt(g('org'))}»"); continue
-                    if not c: E(f"неизвестная валюта «{txt(g('cur'))}»"); continue
-                    item["org"], item["cur"] = o["id"], c["id"]
+                    # мультивалютный счёт: валюты через запятую или точку с запятой — каждая валюта отдельная позиция
+                    parts = [x.strip() for x in txt(g("cur")).replace(";", ",").replace("/", ",").split(",") if x.strip()]
+                    cs = [find_ref(T["currencies"], x) for x in parts]
+                    if not parts or not all(cs): E(f"неизвестная валюта «{txt(g('cur'))}»"); continue
+                    item["org"], item["cur"], item["curs"] = o["id"], cs[0]["id"], list(dict.fromkeys(c["id"] for c in cs))
                     if kind == "accounts":
                         item["bank"] = txt(g("bank"))
                         item["accType"] = "Депозитный" if "депоз" in txt(g("accType")).lower() else "Расчётный"
@@ -461,11 +767,15 @@ def preview_bal(C, p):
         if not a: errors.append({"row": n, "msg": f"неизвестный счёт или касса «{txt(g('acc'))}»"}); continue
         if not d: errors.append({"row": n, "msg": "неверная дата"}); continue
         if not math.isfinite(sm): errors.append({"row": n, "msg": "пустой или неверный остаток"}); continue
+        cur_id = a["cur"]
         if txt(g("cur")):
             c = find_ref(C.S["currencies"], g("cur"))
-            if not c or c["id"] != a["cur"]:
-                errors.append({"row": n, "msg": f"валюта «{txt(g('cur'))}» не совпадает с валютой счёта"}); continue
-        items.append({"date": d, "acc": a["id"], "sum": r2(sm)})
+            if not c or c["id"] not in acc_curs(a):
+                errors.append({"row": n, "msg": f"валюты «{txt(g('cur'))}» нет у счёта"}); continue
+            cur_id = c["id"]
+        elif len(acc_curs(a)) > 1:
+            errors.append({"row": n, "msg": "у мультивалютного счёта укажите валюту"}); continue
+        items.append({"date": d, "acc": a["id"], "cur": cur_id, "sum": r2(sm)})
     dates = sorted({x["date"] for x in items})
     return {"errors": errors, "warns": [], "items": len(items), "dates": dates}, items
 
@@ -476,14 +786,14 @@ def apply_bal(C, u, p, file_name):
     if pv["errors"]:
         raise ApiError(["Файл с ошибками целиком не загружается (ТР-63)."])
     add = upd = 0
-    ix = {(b["date"], b["acc"]): b for b in C.S["bal1c"]}
+    ix = {(b["date"], b["acc"], b.get("cur")): b for b in C.S["bal1c"]}
     for it in items:
-        ex = ix.get((it["date"], it["acc"]))
+        ex = ix.get((it["date"], it["acc"], it["cur"]))
         if ex:
             if ex["sum"] != it["sum"]:
                 ex["sum"] = it["sum"]; C.st.save("bal1c", ex); upd += 1
         else:
-            C.st.add("bal1c", it); ix[(it["date"], it["acc"])] = it; add += 1
+            C.st.add("bal1c", it); ix[(it["date"], it["acc"], it["cur"])] = it; add += 1
     C.st.touch()
     bad = sum(1 for r in recon(C) if r["date"] in pv["dates"] and abs(r["diff"]) >= 0.005)
     C.st.add("exchangeLog", {"id": None, "t": now_iso(), "u": u["id"], "kind": KIND_NAMES["bal"], "file": file_name, "added": add, "updated": upd, "excluded": 0,
@@ -493,7 +803,10 @@ def apply_bal(C, u, p, file_name):
 
 
 def preview(C, u, kind, p):
-    need_admin(u)
+    if kind == "exp":
+        need_upload(u)
+    else:
+        need_admin(u)
     if kind == "exp":
         pv, _ = preview_exp(C, p)
     elif kind == "ref":

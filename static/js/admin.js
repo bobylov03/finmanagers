@@ -45,13 +45,15 @@ function refKindBySheet(n){ const s = norm(n);
   if(s.includes("организац")) return "orgs"; if(s.includes("тип") || s.includes("cf") || s.includes("стат")) return "cfTypes"; return ""; }
 const BAL_SPEC = {date:["Дата"], acc:["Счёт или касса","Счет или касса","Счёт","Счет","Касса","Банковский счёт"], cur:["Валюта"], sum:["Остаток","Остаток в валюте","Сумма"]};
 
-let IMP = {tab:"exp", fileName:"", sheets:null, err:null, sel:null, pv:null, refKind:"", logged:false};
+let IMP = {tab:"exp", fileName:"", sheets:null, err:null, sel:null, pv:null, refKind:"", logged:false, fixes:{}, flt:"", lim:300};
+const HIST_HEAD = ["Сумма","Тип","Подразделение","Заметки","Получатель","Организация","Банк","Валюта","Сумма документа","Курс","Зона ответственности","Текущий этап","Текущее состояние","Номер ERP","GUID ERP","Тип документа ERP","Дата документа ERP","Дата проведения банком","Хозяйственная операция","Тип расхода CF"];
+const impReset = tab => { IMP = {tab, fileName:"", sheets:null, err:null, sel:null, pv:null, logged:false, refKind:"", fixes:{}, flt:"", lim:300}; };
 const cellOf = (row, map, k) => map[k]===undefined ? undefined : row[map[k]];
 const txt = v => v===null||v===undefined ? "" : String(v).trim();
 
 async function impFile(input){
   const f = input.files && input.files[0]; if(!f) return;
-  IMP = Object.assign(IMP, {fileName:f.name, sheets:null, err:null, sel:null, pv:null, logged:false});
+  IMP = Object.assign(IMP, {fileName:f.name, sheets:null, err:null, sel:null, pv:null, logged:false, fixes:{}, flt:"", lim:300});
   busy(true);
   try{ IMP.sheets = await readAnyFile(f); }catch(e){ IMP.err = e.message; }
   finally{ busy(false); }
@@ -59,7 +61,7 @@ async function impFile(input){
   await impPreview(); render();
 }
 /** Файл читает браузер, проверку и сопоставление по GUID делает сервер */
-function impPayload(){ return {sheets:IMP.sheets, sel:IMP.sel, refKind:IMP.refKind||"", fileName:IMP.fileName}; }
+function impPayload(){ return {sheets:IMP.sheets, sel:IMP.sel, refKind:IMP.refKind||"", fileName:IMP.fileName, fixes:IMP.fixes||{}}; }
 async function impPreview(){
   if(!IMP.sheets) return;
   busy(true);
@@ -76,12 +78,15 @@ async function impApply(){
   const tab = IMP.tab;
   const r = await mutate(`/api/import/${tab}/apply`, impPayload());
   if(!r.ok){ IMP.err = r.errors.join("; "); render(); return; }
-  IMP = {tab, fileName:"", sheets:null, err:null, sel:null, pv:null, logged:false, refKind:""};
-  go(tab==="bal" ? "recon" : tab==="exp" ? "xlog" : "import");
+  impReset(tab);
+  if(tab==="exp") toast(`Загружено: добавлено ${r.result.added}, изменено ${r.result.updated}, исключено ${r.result.excluded}${r.result.held?`, на проверку казначеям ${r.result.held}`:""}`, {lvl:"ok"});
+  go(tab==="bal" ? "recon" : tab==="exp" ? "docs" : "import");
 }
 const applyExp = impApply, applyRef = impApply, applyBal = impApply;
 function downloadTemplate(kind){
-  if(kind==="exp") downloadBlob(xlsxBlob([{name:"Расходы", rows:[EXP_HEAD]}, {name:"Описание", rows:[["Колонка","Обязательно","Значения"],
+  if(kind==="exp") return downloadBlob(xlsxBlob([{name:"История согласования", rows:[HIST_HEAD]}, {name:"Описание", rows:[["№","Поле","Куда ложится"],
+    ...HIST_HEAD.map((h,i)=>[i+1, h, ["Сумма строки расшифровки","СБДС или РКО","Подразделение строки","Назначение платежа","Контрагент","Организация","Банковский счёт организации → позиция (как в справочнике счетов, включая депозитные)","Валюта (позиция = счёт × валюта)","Контроль: сумма строк = сумме документа","Курс документа к USD (форма котировки — в настройках)","Зона","Состояние документа по таблице ТР-106","Состояние документа по таблице ТР-106","Номер ERP (показ)","GUID ERP — ключ документа (ТР-13)","Карточка документа","Дата движения","Дата проведения банком (ТР-09, ТР-84)","ТР-70: перечисленные операции пропускаются","Тип расхода CF строки (столбец 20, добавлен к отчёту ERP)"][i]])]}]), "Шаблон — История согласования.xlsx");
+  if(kind==="exp61") downloadBlob(xlsxBlob([{name:"Расходы", rows:[EXP_HEAD]}, {name:"Описание", rows:[["Колонка","Обязательно","Значения"],
     ["GUID документа 1С","да","Ключ документа 1С. Несколько строк с одним GUID — строки расшифровки одного документа"],["Тип","да","СБДС или РКО; ПБДС и ПКО — только с даты перехода на автообмен (ТР-72), до неё поступления вводятся вручную"],
     ["Хозяйственная операция","","Операции из списка ТР-70 пропускаются: они вводятся вручную"],["Дата","да","Дата создания документа, ДД.ММ.ГГГГ"],
     ["Организация","да","Идентификатор или наименование из 1С"],["Счёт или касса","да","Идентификатор или наименование; должен принадлежать организации"],
@@ -92,6 +97,73 @@ function downloadTemplate(kind){
   if(kind==="ref") downloadBlob(xlsxBlob(REF_ORDER.map(k=>({name:REF_KINDS[k].name, rows:[REF_KINDS[k].head]}))), "Шаблон — справочники 1С.xlsx");
   if(kind==="bal") downloadBlob(xlsxBlob([{name:"Остатки 1С", rows:[["Дата","Счёт или касса","Валюта","Остаток"]]}]), "Шаблон — остатки 1С.xlsx");
 }
+async function impMap(kind, raw, target){
+  const r = await apiRaw("/api/mappings", {kind, raw, target});
+  if(!r.ok) return showErrors(r);
+  await reloadState(); await impPreview(); render();
+  toast(`Сопоставление запомнено: «${raw}»`, {lvl:"ok"});
+}
+async function impState(value, meaning){
+  if(!meaning) return;
+  const r = await apiRaw("/api/statemap", {value, meaning});
+  if(!r.ok) return showErrors(r);
+  await reloadState(); await impPreview(); render();
+  toast(`Таблица соответствия: «${value}» → ${MEANING_NAMES[meaning]}`, {lvl:"ok"});
+}
+function impFix(n, f, v){ (IMP.fixes[n] = IMP.fixes[n]||{})[f] = v; impPreview().then(render); }
+function impUnfix(n, f){ if(IMP.fixes[n]){ delete IMP.fixes[n][f]; if(!Object.keys(IMP.fixes[n]).length) delete IMP.fixes[n]; } impPreview().then(render); }
+const REG_ST = {new:["Новая","ok"], changed:["Изменится","warn"], same:["Без изменений",""], excluded:["Исключится","off"], skipped:["Пропущена",""], error:["Ошибка","off"]};
+const MAP_LIST = {org:()=>DB.orgs, acc:()=>[...DB.accounts,...DB.cashboxes], cur:()=>DB.currencies, dept:()=>DB.depts, cf:()=>DB.cfTypes, zone:()=>DB.zones};
+function regCell(r, f, shown){
+  const ch = (r.changes||[]).find(c=>c.f===f || (f==="state" && c.f==="state"));
+  const err = (r.errs||[]).find(e=>e.f===f); const warn = (r.warns||[]).find(e=>e.f===f);
+  const fixed = (r.fixed||[]).includes(f) || (f==="state" && (r.fixed||[]).some(x=>x==="stage"||x==="state"));
+  let h = `<span class="${ch?"chg":""}" ${ch?`title="Было: ${esc(ch.before)}"`:""}>${shown}</span>`;
+  if(r.n && (err || warn) && canUpload(me())){
+    const raw = (r.raw||{})[f]||"";
+    if(f==="state"){   // ТР-106: значение этапа/состояния ERP не задано в таблице соответствия — задать прямо здесь
+      const vals = Object.keys(r.stateGuess||{});
+      h = `${shown}${vals.map(v=>`<div class="fixrow"><span class="raw notr" style="text-decoration:none;color:var(--neg)">«${esc(v)}»</span><select class="fix" title="Значение попадёт в таблицу соответствия состояний ERP (ТР-106) и применится ко всем строкам" onchange="impState('${jsq(v)}',this.value)"><option value="">— что означает? —</option>${Object.entries(MEANING_NAMES).map(([k,t])=>`<option value="${k}">${esc(t)}${r.stateGuess[v]===k?" (по смыслу слова)":""}</option>`).join("")}</select></div>`).join("")}`;
+    } else if(MAP_LIST[f]){ const L = f==="acc" && r.org ? MAP_LIST.acc().filter(a=>a.org===r.org) : MAP_LIST[f]();
+      h = `<span class="raw notr">${esc(raw||"(пусто)")}</span><select class="fix" title="Выберите из справочника — сопоставление запомнится для следующих загрузок (ТР-109)" onchange="impMap('${f}','${jsq(raw)}',this.value)"><option value="">— выбрать из справочника —</option>${(f==="dept"?tree(L):L).map(x=>`<option value="${esc(x.id)}">${"   ".repeat(x._lvl||0)}${esc(x.name||x.code)}</option>`).join("")}</select>`;
+    } else if(err){
+      h = `<input type="text" class="fix" value="${esc(raw)}" title="Исправьте значение — строка проверится сразу (ТР-109)" onchange="impFix('${r.n}','${f}',this.value)">`;
+    }
+  }
+  if((r.mapped||[]).includes(f) && !err) h += ` <span class="tag info fixtag" title="Найдено по запомненному сопоставлению (ТР-109): «${esc((r.raw||{})[f]||"")}»">по сопоставлению</span>`;
+  if(fixed) h += ` <span class="tag warn fixtag" title="Исправлено вручную; было в файле: «${esc((r.orig||{})[f]||"")}»">исправлено вручную</span>${r.n?` <a class="lnk sm" onclick="impUnfix('${r.n}','${f}')">вернуть</a>`:""}`;
+  return h;
+}
+const FIELD_RU = {sum:"сумма", docSum:"сумма документа", rate:"курс", date:"дата", bankDate:"дата банка", acc:"счёт", org:"организация", cur:"валюта", state:"состояние", stage:"этап", status:"состояние", dept:"подразделение", cf:"тип расхода CF", zone:"зона", cpty:"получатель", purpose:"назначение", type:"тип", guid:"GUID", no:"номер", wallet:"кошелёк", erpType:"тип документа ERP", op:"хоз. операция", approved:"согласование", lines:"строки"};
+const REG_COLS = new Set(["guid","type","date","org","acc","cur","sum","docSum","rate","state","dept","cf","cpty","bankDate"]);
+function regNote(r, span){
+  // ошибки в полях без своей колонки (ТР-61: USD, кошелёк, курс) — исправляются здесь же (ТР-109)
+  const extra = r.n && canUpload(me()) ? (r.errs||[]).filter(e=>e.f && (!REG_COLS.has(e.f) || (e.f==="rate" && r.fmt!=="hist"))) : [];
+  const parts = [...(r.errs||[]).map(e=>`<span class="neg">✕ ${esc(e.msg)}</span>`),
+    ...extra.map(e=>`<label class="fixrow">${esc(FIELD_RU[e.f]||e.f)}: <input type="text" class="fix" value="${esc((r.raw||{})[e.f]||"")}" onchange="impFix('${r.n}','${e.f}',this.value)"></label>`), ...(r.warns||[]).map(e=>`<span class="amber">! ${esc(e.msg)}</span>`),
+    ...(r.why?[`<span class="muted">${esc(r.why)}</span>`]:[]),
+    ...((r.changes||[]).length?[`<span>Изменится: ${r.changes.map(c=>`<b>${esc(FIELD_RU[c.f]||c.f)}</b> <s>${esc(c.before)}</s> → <span class="neg">${esc(c.after)}</span>`).join("; ")}</span>`]:[])];
+  return parts.length ? `<tr class="reg-note reg-${r.st}"><td colspan="${span}"><div class="reg-msg">${parts.join("")}</div></td></tr>` : "";
+}
+function registryTable(P){
+  const reg = P.registry||[]; const cnt = {}; reg.forEach(r=>cnt[r.st]=(cnt[r.st]||0)+1);
+  const list = reg.filter(r=>!IMP.flt || r.st===IMP.flt); const shown = list.slice(0, IMP.lim);
+  const hist = P.format==="hist";
+  return `<div class="chips reg-chips">${chip(!IMP.flt,"IMP.flt='';render()",`Все · ${reg.length}`)}${Object.entries(REG_ST).filter(([k])=>cnt[k]).map(([k,[t]])=>chip(IMP.flt===k,`IMP.flt='${k}';render()`,`${t} · ${cnt[k]}`)).join("")}</div>
+  <div class="tbl-wrap reg-wrap"><table id="tReg" class="registry"><thead><tr><th>Стр.</th><th>Статус</th><th>Номер ERP · GUID</th><th>Тип</th><th>Дата</th><th>Организация</th><th>${hist?"Банк (счёт)":"Счёт или касса"}</th><th>Валюта</th><th class="num">Сумма</th>${hist?`<th class="num">Сумма документа</th><th class="num">Курс</th>`:""}<th>Состояние</th><th>Подразделение</th><th>Тип расхода CF</th><th>Получатель</th><th>Дата банка</th></tr></thead>
+  <tbody>${shown.map(r=>{ const [stName, stCls] = REG_ST[r.st]||["",""];
+    return `<tr class="reg-${r.st}"><td>${r.n||""}</td><td><span class="tag ${stCls}">${stName}</span></td>
+      <td><span class="notr">${esc(r.no||"")}</span><div class="sub">${regCell(r,"guid",`<code class="k">${esc(r.guid||"")}</code>`)}</div></td>
+      <td>${regCell(r,"type",esc(r.type||""))}</td><td class="nowrap">${regCell(r,"date",r.date?fmtD(r.date):"")}</td>
+      <td>${regCell(r,"org",esc(r.org?nm(org(r.org)):""))}</td><td>${regCell(r,"acc",esc(r.acc?nm(acc(r.acc)):""))}</td><td>${regCell(r,"cur",esc(r.cur?curCode(r.cur):""))}</td>
+      <td class="num">${regCell(r,"sum",r.sum!=null?fmt(r.sum):"")}</td>
+      ${hist?`<td class="num">${regCell(r,"docSum",r.docSum!=null?fmt(r.docSum):"")}</td><td class="num">${regCell(r,"rate",r.rate?fmtRate(r.rate):"")}</td>`:""}
+      <td>${regCell(r,"state",`${esc(r.state||"")}${r.stateRaw?`<div class="sub notr">${esc([r.stage,r.stateRaw].filter(Boolean).join(" · "))}</div>`:""}`)}</td>
+      <td>${regCell(r,"dept",esc(r.dept?refName(DB.depts,r.dept):""))}</td><td>${regCell(r,"cf",esc(r.cf?refName(DB.cfTypes,r.cf):""))}</td>
+      <td>${regCell(r,"cpty",esc(r.cpty||""))}</td><td class="nowrap">${regCell(r,"bankDate",r.bankDate?fmtD(r.bankDate):"")}</td>
+</tr>${regNote(r, hist?16:14)}`; }).join("") || `<tr><td colspan="16" class="empty-cell">Строк с таким статусом нет</td></tr>`}</tbody></table></div>
+  ${list.length>IMP.lim?`<div class="row" style="margin-top:8px"><button class="btn" onclick="IMP.lim+=500;render()">Показать ещё 500</button><span class="muted">показаны ${IMP.lim} из ${list.length}</span></div>`:""}`;
+}
 function impSelOrg(id,on){ const S = IMP.sel; S.orgs = on ? [...new Set([...S.orgs,id])] : S.orgs.filter(x=>x!==id); impPreview().then(render); }
 function errTable(list, title, cls="err"){
   if(!list.length) return "";
@@ -100,32 +172,25 @@ function errTable(list, title, cls="err"){
 }
 function viewImport(){
   const T = IMP.tab; const P = IMP.pv;
-  const tabs = [["exp","Документы 1С","ТР-60…63"],["ref","Справочники и курсы","ТР-64"],["bal","Остатки 1С для сверки","ТР-65"]];
+  const tabs = (isAdmin(me()) ? [["exp","Расходы: История согласования","ТР-90, ТР-108"],["ref","Справочники и курсы","ТР-64"],["bal","Остатки 1С для сверки","ТР-65"]] : [["exp","Расходы: История согласования","ТР-90, ТР-108"]]);
   let pv = "";
   if(IMP.err) pv = `<div class="alert err">${esc(IMP.err)}</div>`;
   else if(P && T==="exp"){
-    const S = IMP.sel;
-    pv = `<div class="panel"><header><h2>Предпросмотр · ${esc(IMP.fileName)}</h2><span class="hint">${P.rows||0} строк</span></header><div class="body">
+    const S = IMP.sel; const errN = P.errors.length; const nothing = !P.add.length&&!P.upd.length&&!P.exc.length;
+    pv = `<div class="panel"><header><h2>Реестр загрузки · ${esc(IMP.fileName)}</h2><span class="hint">${P.format==="hist"?"формат «История согласования» (ТР-90)":"формат ТР-61"} · ${P.rows||0} ${plural(P.rows||0,"строка","строки","строк")}</span></header><div class="body">
       ${P.allOrgs.length?`<div class="filters" style="margin-bottom:12px">
         <div class="fld"><span>Загрузка заменяет период для организаций (ТР-62)</span><div class="msel">${P.allOrgs.map(o=>`<label class="chk"><input type="checkbox" ${S.orgs.includes(o)?"checked":""} onchange="impSelOrg('${o}',this.checked)"> ${esc(nm(org(o)))}</label>`).join("")}</div></div>
         <label class="fld"><span>Даты с</span><input type="date" value="${S.from}" onchange="IMP.sel.from=this.value;impPreview().then(render)"></label>
         <label class="fld"><span>по</span><input type="date" value="${S.to}" onchange="IMP.sel.to=this.value;impPreview().then(render)"></label>
-        <span class="muted" style="max-width:48ch">Документы этих организаций и дат, которых нет в файле, будут исключены из расчёта. Повторная загрузка того же файла ничего не меняет.</span></div>`:""}
-      <div class="stats" style="border:1px solid var(--line-soft);border-radius:4px;margin-bottom:12px">
-        <div class="stat"><b>${P.add.length}</b><span>добавится</span></div><div class="stat"><b>${P.upd.length}</b><span>изменится</span></div>
-        <div class="stat"><b>${P.exc.length}</b><span>исключится</span></div><div class="stat"><b>${P.same.length}</b><span>без изменений</span></div>
-        <div class="stat"><b class="${P.errors.length?"neg":""}">${P.errors.length}</b><span>ошибок</span></div></div>
-      ${P.errors.length?`<div class="alert err">Файл с ошибками целиком не загружается (ТР-63). Исправьте файл в 1С и загрузите снова.</div>`:""}
-      ${errTable(P.errors,"Ошибки по строкам")}
-      ${P.closed.length?`<div class="alert warn">Затрагивает закрытый период: ${P.closed.length} док. Изменения будут приняты (1С — мастер) и попадут в список «Изменения в закрытом периоде» (ТР-56).</div>`:""}
-      ${P.skip70.length?`<div class="alert warn"><b>Пропущено — уже введено вручную (ТР-70): ${P.skip70.length} строк</b><div class="tbl-wrap" style="max-height:200px;margin-top:6px"><table><thead><tr><th>Строка</th><th>GUID</th><th>Организация</th><th>Хоз. операция</th><th class="num">Сумма</th></tr></thead>
-        <tbody>${P.skip70.map(s=>`<tr><td>${s.row}</td><td><code class="k">${esc(s.guid)}</code></td><td>${esc(nm(org(s.org)))}</td><td>${esc(s.op)}</td><td class="num">${fmt(s.sum)} ${esc(curCode(s.cur))}</td></tr>`).join("")}</tbody></table></div></div>`:""}
-      ${errTable(P.warns,"Предупреждения","warn")}
-      ${P.skipOut.length?`<p class="muted">Вне выбранных организаций/дат или до начала учёта: ${P.skipOut.length} строк — не загружаются.</p>`:""}
-      ${P.exc.length?`<details><summary>Будут исключены (${P.exc.length})</summary><table><tbody>${P.exc.slice(0,200).map(e=>`<tr><td>${fmtD(e.date)}</td><td>${e.type} ${esc(e.no1c)}</td><td><code class="k">${esc(e.guid)}</code></td><td class="num">${fmt(e.total)} ${esc(curCode(e.cur))}</td></tr>`).join("")}</tbody></table></details>`:""}
-      <div class="row" style="margin-top:12px"><button class="btn primary" ${P.errors.length||(!P.add.length&&!P.upd.length&&!P.exc.length)?"disabled":""} onclick="applyExp()">Загрузить</button>
-        <button class="btn" onclick="IMP.sheets=null;IMP.pv=null;IMP.fileName='';render()">Отменить</button>
-        ${!P.errors.length&&!P.add.length&&!P.upd.length&&!P.exc.length?`<span class="muted">Изменений нет — данные уже совпадают с файлом.</span>`:""}</div>
+        <span class="muted" style="max-width:48ch">Документы этих организаций и дат, которых нет в файле, будут исключены — они показаны в реестре строками «Исключится». Повторная загрузка того же файла ничего не меняет.</span></div>`:""}
+      ${errN?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
+      ${(P.unmapped||[]).length?`<div class="alert err">Значения этапа или состояния ERP не заданы в таблице соответствия (ТР-106): <b class="notr">${esc(P.unmapped.join(", "))}</b>. Пока значение не сопоставлено, непонятно, входит ли документ в расчёт, поэтому такие строки — ошибки. Укажите в колонке «Состояние», что означает каждое значение, — оно запомнится в таблице соответствия${isAdmin(me())?` (её можно править в <a class="lnk" onclick="go('settings')">настройках</a>)`:""}.</div>`:""}
+      ${P.closed.length?`<div class="alert warn">Затрагивает закрытый период: ${P.closed.length} док. Изменения ERP принимаются (1С — мастер) и попадут в «Изменения в закрытом периоде» (ТР-56, ТР-89).</div>`:""}
+      ${(P.significant||[]).length?`<div class="alert warn">Существенные изменения уже учтённых документов: ${P.significant.length}. После загрузки они уйдут на проверку казначею, до проверки в расчёте останется прежнее движение (ТР-85).</div>`:""}
+      ${registryTable(P)}
+      <div class="row" style="margin-top:14px"><button class="btn primary" ${errN||nothing?"disabled":""} onclick="applyExp()" title="${errN?"Сначала исправьте все ошибки":""}">Загрузить</button>
+        <button class="btn" onclick="impReset('exp');render()">Отменить</button>
+        ${errN?`<span class="neg">Кнопка станет активной, когда ошибок будет 0</span>`:nothing?`<span class="muted">Изменений нет — данные уже совпадают с файлом.</span>`:`<span class="muted">Загрузка подтверждается целиком: добавится ${P.add.length}, изменится ${P.upd.length}, исключится ${P.exc.length} док.</span>`}</div>
     </div></div>`;
   } else if(P && T==="ref"){
     pv = `<div class="panel"><header><h2>Предпросмотр · ${esc(IMP.fileName)}</h2></header><div class="body">
@@ -143,13 +208,13 @@ function viewImport(){
       <button class="btn" onclick="IMP.sheets=null;IMP.pv=null;IMP.fileName='';render()">Отменить</button></div></div></div>`;
   }
   const help = {
-    exp:`Одна строка файла = одна строка расшифровки документа (ТР-61). Колонки: ${EXP_HEAD.join(", ")}. Кошелёк необязателен — проставляется правилами. Расходы СБДС и РКО загружаются всегда; строки с хозяйственными операциями ${DB.settings.excludedOps.map(x=>`«${x}»`).join(", ")} до даты перехода пропускаются — они введены вручную (ТР-70). Поступления ПБДС и ПКО принимаются только с даты перехода на автообмен${DB.settings.switchDate?" ("+fmtD(DB.settings.switchDate)+")":" (сейчас не задана)"} — ТР-72.`,
+    exp:`Основной формат — отчёт ERP «История согласования»: 19 полей отчёта в их порядке и наименованиях + 20-е «Тип расхода CF» (ТР-90). Одна строка = одна строка расшифровки; строки с одним GUID ERP — один документ. Поле «Банк» — банковский счёт организации, как в справочнике счетов. Строки с хозяйственными операциями ${DB.settings.excludedOps.map(x=>`«${x}»`).join(", ")} пропускаются — они введены вручную (ТР-70). Формат ТР-61 (GUID документа 1С, Тип, Статус…) тоже принимается — для ручного ввода и будущего шлюза.`,
     ref:`Одна книга .xlsx с листами «Организации», «Банковские счета», «Кассы», «Валюты», «Курсы к USD», «Типы расхода CF», «Подразделения», «Зоны ответственности» — или один .csv с выбором справочника. Элементы сопоставляются по идентификатору ERP; удаления нет — только «Дата деактивации» (ТР-19). Курс — в форме котировки: сколько единиц валюты за 1 USD (например, 3,6725 AED), не менее 6 знаков (ТР-32).`,
     bal:`Колонки: Дата, Счёт или касса, Валюта, Остаток. Сверка выполняется на дату загруженных остатков (ТР-65).`,
   }[T];
   return `<h1>Загрузка файлов</h1>
   <p class="lede">Временный режим до запуска шлюза: расходы, справочники, курсы и остатки выгружаются из 1С в файлы. Формат совпадает с контрактом обмена, поэтому при переходе на автообмен документы сопоставятся по GUID без дублей (ТР-66).</p>
-  <div class="tabs">${tabs.map(([k,t,tr])=>`<a class="${T===k?"on":""}" onclick="IMP={tab:'${k}',fileName:'',sheets:null,err:null,sel:null,pv:null,logged:false,refKind:''};render()">${t} <span class="tzref">${tr}</span></a>`).join("")}</div>
+  <div class="tabs">${tabs.map(([k,t,tr])=>`<a class="${T===k?"on":""}" onclick="impReset('${k}');render()">${t} <span class="tzref">${tr}</span></a>`).join("")}</div>
   <div class="panel"><div class="body">
     <p style="margin-top:0">${esc(help)}</p>
     <div class="row">
@@ -157,7 +222,7 @@ function viewImport(){
         ondrop="event.preventDefault();this.classList.remove('over');const i=this.querySelector('input');i.files=event.dataTransfer.files;impFile(i)">
         <input type="file" accept=".xlsx,.csv,.txt" style="display:none" onchange="impFile(this)">
         <b>${IMP.fileName?esc(IMP.fileName):"Выберите файл .xlsx или .csv"}</b><br><span class="muted">или перетащите его сюда</span></label>
-      <button class="btn" onclick="downloadTemplate('${T}')">Скачать шаблон</button>
+      <button class="btn" onclick="downloadTemplate('${T}')">Скачать шаблон</button>${T==="exp"?`<button class="btn ghost" onclick="downloadTemplate('exp61')">Шаблон ТР-61</button>`:""}
     </div>
   </div></div>${pv}`;
 }
@@ -173,37 +238,43 @@ function viewXlog(){
    16. ВХОДЯЩИЕ ОСТАТКИ (ТР-20…22)
    ============================================================ */
 let OB = null;
+function obControl(accId, cur){
+  const d0 = DB.settings.startDate; const k = (DB.dbStart||{})[accId+"|"+cur];
+  if(k) return {src:"db", sum:k.bp, b:k.b, p:k.p};
+  const b = DB.bal1c.find(x=>x.acc===accId && (x.cur||acc(accId).cur)===cur && x.date===d0);
+  return b ? {src:"1c", sum:b.sum} : null;
+}
+const obSrc = c => c ? (c.src==="db" ? `Daily Balance: Б ${fmt(c.b)} − исходящие в пути ${fmt(c.p)}` : "остаток 1С") : "";
 function viewOpening(){
   DRILLS = []; const d0 = DB.settings.startDate;
   if(!d0) return `<h1>Входящие остатки <span class="tzref">ТР-21</span></h1><div class="alert warn">Сначала задайте дату начала учёта по кошелькам (ТР-20). <a class="lnk" onclick="go('settings')">Период и настройки</a></div>`;
-  const accs = [...DB.accounts.map(a=>Object.assign({kind:"Счёт"},a)), ...DB.cashboxes.map(a=>Object.assign({kind:"Касса"},a))].filter(a=>isActiveAt(a,d0))
-    .sort((a,b)=>(nm(org(a.org))+a.name).localeCompare(nm(org(b.org))+b.name,"ru"));
+  const pos = allPositions().filter(p=>isActiveAt(p.a,d0)).sort((x,y)=>(nm(org(x.a.org))+x.a.name+curCode(x.cur)).localeCompare(nm(org(y.a.org))+y.a.name+curCode(y.cur),"ru"));
   const locked = inClosed(d0);
   return `<h1>Входящие остатки на ${fmtD(d0)} <span class="tzref">ТР-21, ТР-22</span></h1>
-  <p class="lede">Вводит только администратор, в разрезе кошелёк × счёт или касса × валюта. Сумма кошельков по каждому счёту должна равняться остатку счёта в 1С на ту же дату — расхождение видно до сохранения. Остаток 1С берётся из загруженного файла остатков.</p>
+  <p class="lede">Вводит только администратор, в разрезе кошелёк × позиция (счёт × валюта). Сумма кошельков по позиции должна равняться банковскому остатку Daily Balance на утро даты начала за минусом исходящих в пути, а если отчёта Daily Balance нет — остатку 1С. Расхождение видно до сохранения.</p>
   ${locked?`<div class="alert warn">Дата начала учёта в закрытом периоде — входящие остатки менять нельзя (ТР-55).</div>`:""}
   <div class="panel"><header><div style="flex:1"></div>${exportBtn("tOB","Входящие остатки")}</header><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="tOB">
-    <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th class="num">Остаток 1С</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Кошельки</th><th></th></tr></thead>
-    <tbody>${accs.map(a=>{ const rows = DB.opening.filter(x=>x.acc===a.id); const s = r2(rows.reduce((t,x)=>t+x.sum,0));
-      const b = DB.bal1c.find(x=>x.acc===a.id && x.date===d0); const diff = b ? r2(s-b.sum) : null;
-      return `<tr class="${diff&&Math.abs(diff)>=0.005?"bad":""}"><td>${esc(nm(org(a.org)))}</td><td>${esc(a.name)}</td><td>${esc(curCode(a.cur))}</td>
-        <td class="num">${b?fmt(b.sum):`<span class="muted">не загружен</span>`}</td><td class="num">${fmt(s)}</td><td class="num ${diff?"neg":""}">${diff===null?"—":fmtS(diff)}</td>
+    <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th class="num">Контрольный остаток</th><th>Источник контроля</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Кошельки</th><th></th></tr></thead>
+    <tbody>${pos.map(({a,cur})=>{ const rows = DB.opening.filter(x=>x.acc===a.id && (x.cur||a.cur)===cur); const s = r2(rows.reduce((t,x)=>t+x.sum,0));
+      const c = obControl(a.id,cur); const diff = c ? r2(s-c.sum) : null;
+      return `<tr class="${diff&&Math.abs(diff)>=0.005?"bad":""}"><td>${esc(nm(org(a.org)))}</td><td>${esc(a.name)}</td><td>${esc(curCode(cur))}</td>
+        <td class="num">${c?fmt(c.sum):`<span class="muted">нет данных</span>`}</td><td class="muted" style="font-size:11px">${esc(obSrc(c))}</td><td class="num">${fmt(s)}</td><td class="num ${diff?"neg":""}">${diff===null?"—":fmtS(diff)}</td>
         <td style="font-size:11px">${rows.map(x=>`${esc(nm(wal(x.wallet)))}: ${fmt(x.sum)}`).join("<br>")}</td>
-        <td>${locked?"":`<button class="btn sm" onclick="openOpening('${a.id}')">Изменить</button>`}</td></tr>`; }).join("") || `<tr><td colspan="8" class="muted">Нет счетов и касс — загрузите справочники 1С</td></tr>`}</tbody></table></div></div></div>`;
+        <td>${locked?"":`<button class="btn sm" onclick="openOpening('${a.id}','${cur}')">Изменить</button>`}</td></tr>`; }).join("") || `<tr><td colspan="9" class="muted">Нет счетов и касс — загрузите справочники 1С</td></tr>`}</tbody></table></div></div></div>`;
 }
-function openOpening(accId){
-  const a = acc(accId); const d0 = DB.settings.startDate;
-  OB = {acc:accId, rows: DB.opening.filter(x=>x.acc===accId).map(x=>clone(x))};
-  if(!OB.rows.length) OB.rows.push({id:uid("OB"), acc:accId, wallet:"", sum:null});
-  openModal({title:`Входящие остатки · ${esc(a.name)} · ${esc(curCode(a.cur))} на ${fmtD(d0)}`, width:760, body:()=>{
-    const s = r2(OB.rows.reduce((t,x)=>t+(x.sum||0),0)); const b = DB.bal1c.find(x=>x.acc===accId && x.date===d0); const diff = b ? r2(s-b.sum) : null;
+function openOpening(accId, cur){
+  const a = acc(accId); const d0 = DB.settings.startDate; cur = cur || a.cur;
+  OB = {acc:accId, cur, rows: DB.opening.filter(x=>x.acc===accId && (x.cur||a.cur)===cur).map(x=>clone(x))};
+  if(!OB.rows.length) OB.rows.push({id:uid("OB"), acc:accId, cur, wallet:"", sum:null});
+  openModal({title:`Входящие остатки · ${esc(a.name)} · ${esc(curCode(cur))} на ${fmtD(d0)}`, width:760, body:()=>{
+    const s = r2(OB.rows.reduce((t,x)=>t+(x.sum||0),0)); const c = obControl(accId,cur); const diff = c ? r2(s-c.sum) : null;
     return `<table><thead><tr><th>Кошелёк</th><th style="width:230px">Сумма</th><th></th></tr></thead><tbody>
       ${OB.rows.map((x,i)=>`<tr><td><select onchange="OB.rows[${i}].wallet=this.value">${optsWallets(x.wallet,d0,{empty:"— выберите —"})}</select></td>
-        <td>${sumWithCur(moneyInput({id:`ob${i}`, value:x.sum, onchange:`OB.rows[${i}].sum=parseNum(this.value);refreshModal()`}), a.cur)}</td>
+        <td>${sumWithCur(moneyInput({id:`ob${i}`, value:x.sum, onchange:`OB.rows[${i}].sum=parseNum(this.value);refreshModal()`}), cur)}</td>
         <td><button class="btn sm" onclick="OB.rows.splice(${i},1);refreshModal()">✕</button></td></tr>`).join("")}
-      <tr class="tot"><td>Сумма кошельков</td><td class="num">${fmt(s)} ${esc(curCode(a.cur))}</td><td></td></tr></tbody></table>
-      <button class="btn sm" style="margin-top:8px" onclick="OB.rows.push({id:uid('OB'),acc:'${accId}',wallet:'',sum:null});refreshModal()">Добавить кошелёк</button>
-      <div class="alert ${diff===null?"warn":Math.abs(diff)<0.005?"ok":"err"}" style="margin-top:12px">${diff===null?`Остаток 1С на ${fmtD(d0)} не загружен — контроль ТР-22 невозможен.`:Math.abs(diff)<0.005?`Совпадает с остатком 1С: ${fmt(b.sum)}`:`Расхождение с 1С: ${fmtS(diff)} ${esc(curCode(a.cur))} (1С: ${fmt(b.sum)})`}</div>`; },
+      <tr class="tot"><td>Сумма кошельков</td><td class="num">${fmt(s)} ${esc(curCode(cur))}</td><td></td></tr></tbody></table>
+      <button class="btn sm" style="margin-top:8px" onclick="OB.rows.push({id:uid('OB'),acc:'${accId}',cur:'${cur}',wallet:'',sum:null});refreshModal()">Добавить кошелёк</button>
+      <div class="alert ${diff===null?"warn":Math.abs(diff)<0.005?"ok":"err"}" style="margin-top:12px">${diff===null?`Нет ни отчёта Daily Balance на утро ${fmtD(d0)}, ни остатка 1С на эту дату — контроль ТР-22 невозможен.`:Math.abs(diff)<0.005?`Совпадает с контрольным остатком ${fmt(c.sum)} (${esc(obSrc(c))})`:`Расхождение: ${fmtS(diff)} ${esc(curCode(cur))}. Контрольный остаток ${fmt(c.sum)} — ${esc(obSrc(c))}`}</div>`; },
     footer:()=>`<button class="btn" onclick="closeModal()">Отмена</button><button class="btn primary" onclick="saveOpening()">Сохранить</button>`});
 }
 async function saveOpening(){
@@ -211,9 +282,9 @@ async function saveOpening(){
   const rows = OB.rows.filter(x=>x.wallet || x.sum);
   if(rows.some(x=>!x.wallet || !isFinite(x.sum))){ alert("В каждой строке нужны кошелёк и сумма"); return; }
   if(new Set(rows.map(x=>x.wallet)).size!==rows.length){ alert("Кошелёк указан дважды"); return; }
-  const s = r2(rows.reduce((t,x)=>t+x.sum,0)); const b = DB.bal1c.find(x=>x.acc===OB.acc && x.date===d0);
-  if(b && Math.abs(s-b.sum)>=0.005 && !confirm(`Сумма кошельков ${fmt(s)} не равна остатку 1С ${fmt(b.sum)}. Сохранить с расхождением?`)) return;
-  const r = await mutate(`/api/opening/${encodeURIComponent(OB.acc)}`, {rows:rows.map(x=>({id:x.id, wallet:x.wallet, sum:x.sum}))});
+  const s = r2(rows.reduce((t,x)=>t+x.sum,0)); const c = obControl(OB.acc, OB.cur);
+  if(c && Math.abs(s-c.sum)>=0.005 && !confirm(`Сумма кошельков ${fmt(s)} не равна контрольному остатку ${fmt(c.sum)} (${obSrc(c)}). Сохранить с расхождением?`)) return;
+  const r = await mutate(`/api/opening/${encodeURIComponent(OB.acc)}`, {cur:OB.cur, rows:rows.map(x=>({id:x.id, wallet:x.wallet, sum:x.sum}))});
   if(!r.ok) return showErrors(r);
   closeModal();
 }
@@ -247,7 +318,9 @@ function openWallet(id){
 }
 function walletBody(){
   const w = WE; const exist = !!wal(w.id); const own = exist ? descendants(w.id) : new Set([w.id]);
-  const bal = exist && w.closed && w.closedFrom ? [...balances(w.closedFrom, facts().filter(f=>f.wallet===w.id)).values()].filter(r=>Math.abs(r.sum)>=0.005) : [];
+  const closing = exist && w.closed && w.closedFrom && !wal(w.id).closed;
+  const bal = closing ? [...balances(w.closedFrom, facts().filter(f=>f.wallet===w.id)).values()].filter(r=>Math.abs(r.sum)>=0.005) : [];
+  const head = closing ? closeHead(w) : null; const neg = bal.filter(r=>r.sum<0);
   return `${w._err?`<div class="alert err">${esc(w._err)}</div>`:""}<div class="grid2">
     <label class="fld"><span>Наименование <em>*</em></span><input type="text" value="${esc(w.name)}" onchange="WE.name=this.value"></label>
     <label class="fld"><span>Родитель</span><select onchange="WE.parent=this.value||null;refreshModal()">${optsTree(DB.wallets, w.parent, "— верхний уровень —", x=>!own.has(x.id))}</select><small>Не более 4 уровней</small></label>
@@ -259,11 +332,15 @@ function walletBody(){
     <label class="chk"><input type="checkbox" ${w.closed?"checked":""} onchange="WE.closed=this.checked;if(this.checked&&!WE.closedFrom)WE.closedFrom=CUR.date;refreshModal()"> Закрыт</label>
     ${w.closed?`<label class="fld" style="margin-left:22px;max-width:220px"><span>Закрыт с даты</span><input type="date" value="${w.closedFrom}" onchange="WE.closedFrom=this.value;refreshModal()"></label>`:""}
   </div>
-  ${bal.length?`<fieldset style="margin-top:12px"><legend>Остаток на ${fmtD(w.closedFrom)} — перенос при закрытии (ТР-25)</legend>
-    <table><tbody>${bal.map(r=>`<tr><td>${esc(nm(acc(r.acc)))}</td><td class="num ${r.sum<0?"neg":""}">${fmt(r.sum)} ${esc(curCode(r.cur))}</td></tr>`).join("")}</tbody></table>
-    <div class="row" style="margin-top:8px"><select onchange="WE._target=this.value">${optsWallets(WE._target,w.closedFrom,{empty:"— куда перенести —",filter:x=>x.id!==w.id})}</select>
-      <button class="btn" onclick="transferOnClose()">Обнулить остаток операциями «Дивиденды односторонние»</button></div>
-    ${bal.some(r=>r.sum<0)?`<p class="muted">Отрицательный остаток закроется встречной операцией: выбранный кошелёк покроет минус на том же счёте.</p>`:""}</fieldset>`:""}`;
+  ${closing?`<fieldset style="margin-top:12px"><legend>Остаток на ${fmtD(w.closedFrom)} — что произойдёт при закрытии (ТР-25)</legend>
+    ${!bal.length?`<p class="muted">Остатка нет — кошелёк закроется без операций.</p>`:`<table><thead><tr><th>Позиция</th><th class="num">Остаток</th><th>Операция</th></tr></thead><tbody>${bal.map(r=>`<tr class="${r.sum<0?"bad":""}"><td>${esc(posLabel(r.acc,r.cur))}</td><td class="num ${r.sum<0?"neg":""}">${fmt(r.sum)} ${esc(curCode(r.cur))}</td><td>${r.sum<0?`<span class="neg">минус не покрыт</span>`:head?`«Дивиденды» → ${esc(head.name)}`:`<span class="neg">нет головного кошелька</span>`}</td></tr>`).join("")}</tbody></table>
+    ${neg.length?`<div class="alert err" style="margin-top:8px">Закрытие с отрицательным остатком запрещено, пока минус не покрыт финансированием. Сначала проведите «Финансирование» в этот кошелёк на ${neg.map(r=>`${fmt(-r.sum)} ${esc(curCode(r.cur))}`).join(", ")}.</div>`
+      :head?`<p class="muted">При сохранении программа создаст по каждой позиции операцию «Дивиденды» датой закрытия в головной кошелёк «${esc(head.name)}» — ближайший головной среди родителей, иначе первый действующий головной.</p>`:`<div class="alert err">Нет действующего головного кошелька — остаток некуда перенести.</div>`}`}</fieldset>`:""}`;
+}
+function closeHead(w){
+  const heads = DB.wallets.filter(x=>x.head && x.id!==w.id && !(x.closed && x.closedFrom && x.closedFrom<=w.closedFrom));
+  let p = wal(w.parent); while(p){ if(heads.includes(p)) return p; p = wal(p.parent); }
+  return heads[0]||null;
 }
 async function saveWallet(){
   const w = WE; w.name = (w.name||"").trim();
@@ -273,13 +350,7 @@ async function saveWallet(){
   const r = await mutate("/api/wallets", {wallet:payload});
   if(!r.ok){ w._err = r.errors.join("; "); refreshModal(); return; }
   closeModal();
-}
-async function transferOnClose(){
-  const w = WE; const t = w._target; if(!t){ alert("Выберите кошелёк, куда перенести остаток"); return; }
-  const pe = periodError(w.closedFrom); if(pe){ alert(pe); return; }
-  const r = await mutate(`/api/wallets/${encodeURIComponent(w.id)}/close`, {target:t, date:w.closedFrom});
-  if(!r.ok) return showErrors(r);
-  closeModal(); alert(`Создано операций: ${r.result.created}`);
+  if(r.result && r.result.created) toast(`Кошелёк закрыт; создано операций «Дивиденды»: ${r.result.created}`, {lvl:"ok"});
 }
 /* ============================================================
    18. ПРАВИЛА АВТОЗАПОЛНЕНИЯ (ТР-73)
@@ -366,18 +437,19 @@ async function saveRule(){
    ============================================================ */
 let UE = null;
 const ROLE_DESC = {
-  owner:["Все кошельки и операции, кроме скрытых без доступа","Только просмотр"],
+  owner:["Все кошельки и операции, кроме скрытых без доступа; весь Daily Balance","Только просмотр"],
   fcHead:["Свои кошельки и все подчинённые им","Только просмотр; внутренние операции вводит казначей"],
-  treasurer:["Остатки и операции своих кошельков; названия всех активных нескрытых кошельков","Вводить и править внутренние операции и ручные документы по своим кошелькам в открытом периоде"],
+  treasurer:["Остатки и операции своих кошельков; названия всех активных нескрытых кошельков; Daily Balance по своим позициям","Вводить и править внутренние операции и ручные документы по своим кошелькам в открытом периоде; сдавать Daily Balance; проверять изменения документов (ТР-85); с правом загрузки — загружать файл расходов (ТР-60)"],
   deptHead:["Свои кошельки и операции","Только просмотр"],
-  admin:["Всё","Пользователи, права, кошельки, правила, входящие остатки, загрузка файлов, закрытие периода, журналы"],
+  finControl:["Все кошельки (кроме скрытых без доступа) и весь Daily Balance: остатки, сверка по всем позициям","Ставить «Объяснено» и исправлять Daily Balance с причиной; проверять документы без кошелька (ТР-85). Внутренние операции не вводит"],
+  admin:["Всё","Пользователи, права, кошельки, правила, входящие остатки, загрузка, сопоставления, настройки Daily Balance, закрытие периода, журналы"],
 };
 function viewUsers(){
   return `<h1>Пользователи и права <span class="tzref">раздел 8</span></h1>
-  <p class="lede">Пять ролей. Права выдаются на кошелёк и распространяются на подчинённые. У пользователя может быть несколько ролей и кошельков — права суммируются (ТР-34). Переключите пользователя в шапке, чтобы проверить, что он видит.</p>
+  <p class="lede">Шесть ролей. Права выдаются на кошелёк и распространяются на подчинённые. У пользователя может быть несколько ролей и кошельков — права суммируются (ТР-34). Переключите пользователя в шапке, чтобы проверить, что он видит.</p>
   <div class="panel"><header><h2>${DB.users.length} пользователей</h2><div style="flex:1"></div><button class="btn primary" onclick="openUser(null)">Добавить пользователя</button></header>
   <div class="body flush"><table><thead><tr><th>Пользователь</th><th>Логин</th><th>Роли</th><th>Кошельки</th><th class="num">Видит кошельков</th><th>Статус</th><th></th></tr></thead>
-  <tbody>${DB.users.map(u=>`<tr class="${u.active?"":"excl"}"><td>${esc(u.name)}${u.email?`<br><span class="muted">${esc(u.email)}</span>`:""}</td><td><code class="k">${esc(u.login)}</code>${u.hasPw?"":` <span class="tag warn">нет пароля</span>`}</td><td>${u.roles.map(r=>`<span class="tag">${esc(ROLES[r])}</span>`).join(" ")}</td>
+  <tbody>${DB.users.map(u=>`<tr class="${u.active?"":"excl"}"><td>${esc(u.name)}${u.email?`<br><span class="muted">${esc(u.email)}</span>`:""}</td><td><code class="k">${esc(u.login)}</code>${u.hasPw?"":` <span class="tag warn">нет пароля</span>`}</td><td>${u.roles.map(r=>`<span class="tag">${esc(ROLES[r])}</span>`).join(" ")}${u.canUpload?` <span class="tag ok" title="ТР-60">право загрузки</span>`:""}</td>
     <td>${esc((u.wallets||[]).map(id=>nm(wal(id))).join(", "))}</td><td class="num">${visibleWallets(u).size}</td><td>${u.active?`<span class="tag ok">активен</span>`:`<span class="tag off">отключён</span>`}</td>
     <td class="num"><button class="btn sm" onclick="openUser('${u.id}')">Изменить</button></td></tr>`).join("")}</tbody></table></div></div>
   <div class="panel"><header><h2>Роли</h2></header><div class="body flush"><table><thead><tr><th>Роль</th><th>Видит</th><th>Может</th></tr></thead>
@@ -390,9 +462,10 @@ function openUser(id){
       <label class="fld"><span>Логин <em>*</em></span><input type="text" value="${esc(UE.login)}" onchange="UE.login=this.value"></label>
       <label class="fld"><span>E-mail для уведомлений</span><input type="text" value="${esc(UE.email||"")}" onchange="UE.email=this.value"></label>
       <label class="fld"><span>${UE.hasPw?"Новый пароль (оставьте пустым, чтобы не менять)":"Пароль <em>*</em>"}</span><input type="password" autocomplete="new-password" value="${esc(UE._pw)}" onchange="UE._pw=this.value"><small>Не короче 8 символов. Вход по логину и паролю (ТР-48)</small></label></div>
-    <div class="split" style="margin-top:12px"><fieldset><legend>Роли</legend>${Object.entries(ROLES).map(([k,n])=>`<label class="chk"><input type="checkbox" ${UE.roles.includes(k)?"checked":""} onchange="UE.roles=this.checked?[...new Set([...UE.roles,'${k}'])]:UE.roles.filter(x=>x!=='${k}');refreshModal()"> ${esc(n)}</label>`).join("")}</fieldset>
+    <div class="split" style="margin-top:12px"><fieldset class="roles"><legend>Роли</legend>${Object.entries(ROLES).map(([k,n])=>`<label class="chk"><input type="checkbox" ${UE.roles.includes(k)?"checked":""} onchange="UE.roles=this.checked?[...new Set([...UE.roles,'${k}'])]:UE.roles.filter(x=>x!=='${k}');refreshModal()"> ${esc(n)}</label>`).join("")}</fieldset>
       <fieldset><legend>Кошельки (с подчинёнными)</legend>${walletChecklist(UE.wallets,"ueW",{only:new Set(DB.wallets.map(w=>w.id))})}</fieldset></div>
-    <label class="chk" style="margin-top:8px"><input type="checkbox" ${UE.active?"checked":""} onchange="UE.active=this.checked"> Активен</label>
+    ${UE.roles.includes("treasurer")?`<label class="chk" style="margin-top:8px;display:flex"><input type="checkbox" ${UE.canUpload?"checked":""} onchange="UE.canUpload=this.checked"> Право загрузки файла расходов «История согласования» (ТР-60)</label>`:""}
+    <label class="chk" style="margin-top:8px;display:flex"><input type="checkbox" ${UE.active?"checked":""} onchange="UE.active=this.checked"> Активен</label>
     <p class="muted">Итого увидит кошельков: ${visibleWallets(Object.assign({},UE,{id:"__preview"+Math.random()})).size}</p>`,
     footer:()=>`<button class="btn" onclick="closeModal()">Отмена</button><button class="btn primary" onclick="saveUser()">Сохранить</button>`});
 }
@@ -403,7 +476,7 @@ async function saveUser(){
   if(!u.roles.length){ u._err = "Назначьте хотя бы одну роль"; refreshModal(); return; }
   if(!u.hasPw && !u._pw){ u._err = "Задайте пароль"; refreshModal(); return; }
   if(u._pw && u._pw.length < 8){ u._err = "Пароль — не короче 8 символов"; refreshModal(); return; }
-  const payload = {id: usr(u.id) ? u.id : "", name:u.name, login:u.login, email:(u.email||"").trim(), roles:u.roles, wallets:u.wallets, active:!!u.active};
+  const payload = {id: usr(u.id) ? u.id : "", name:u.name, login:u.login, email:(u.email||"").trim(), roles:u.roles, wallets:u.wallets, active:!!u.active, canUpload:!!u.canUpload && u.roles.includes("treasurer")};
   const r = await mutate("/api/users", {user:payload, password:u._pw||""});
   if(!r.ok){ u._err = r.errors.join("; "); refreshModal(); return; }
   closeModal();
@@ -422,7 +495,7 @@ function viewRefs(){
       <span class="muted">Курс — в форме котировки: единиц валюты за 1 USD. USD = ÷ курс, округляется только итог. Контроль: 50 000 000 AED ÷ 3,6725 = ${fmt(toUSD(50000000,"__",null,3.6725))} USD (ТР-32).</span></div>
       <table id="tRef"><thead><tr><th>Валюта</th><th>Дата</th><th class="num">Единиц за 1 USD</th><th class="num">USD за 1 единицу</th></tr></thead><tbody>${list.map(r=>`<tr><td>${esc(curCode(r.cur))}</td><td>${fmtD(r.date)}</td><td class="num">${fmtRate(r.rate)}</td><td class="num muted">${fmtRate(1/r.rate)}</td></tr>`).join("")||`<tr><td colspan="4" class="muted">Курсов нет</td></tr>`}</tbody></table>`;
   } else {
-    const cols = {orgs:[["Наименование",x=>esc(x.name)]], accounts:[["Наименование",x=>esc(x.name)],["Организация",x=>esc(nm(org(x.org)))],["Валюта",x=>esc(curCode(x.cur))],["Банк",x=>esc(x.bank||"")],["Вид",x=>esc(x.accType||"")]],
+    const cols = {orgs:[["Наименование",x=>esc(x.name)]], accounts:[["Наименование",x=>esc(x.name)],["Организация",x=>esc(nm(org(x.org)))],["Валюты (позиции)",x=>accCurs(x).map(c=>`<span class="tag">${esc(curCode(c))}</span>`).join(" ")],["Банк",x=>esc(x.bank||"")],["Вид",x=>esc(x.accType||"")]],
       cashboxes:[["Наименование",x=>esc(x.name)],["Организация",x=>esc(nm(org(x.org)))],["Валюта",x=>esc(curCode(x.cur))]], currencies:[["Наименование",x=>esc(x.name)],["Код",x=>esc(x.code||"")]],
       cfTypes:[["Наименование",x=>esc(x.name)]], depts:[["Наименование",x=>`<span class="tree-pad" style="width:${(x._lvl||0)*16}px"></span>${esc(x.name)}`]], zones:[["Наименование",x=>esc(x.name)]]}[REFT];
     const list = REFT==="depts" ? tree(DB.depts) : DB[REFT];
@@ -432,7 +505,7 @@ function viewRefs(){
   return `<h1>Справочники 1С</h1>
   <p class="lede">Мастер-система — 1С ERP. Справочники идентичны ERP и сопоставляются по идентификаторам, в приложении только просмотр; ручного заведения нет, чтобы не было второго источника данных (ТР-01, ТР-64).</p>
   <div class="tabs">${tabs.map(([k,n,c])=>`<a class="${REFT===k?"on":""}" onclick="REFT='${k}';render()">${n} <span class="muted">${c}</span></a>`).join("")}</div>
-  <div class="panel"><header><div style="flex:1"></div><button class="btn" onclick="IMP={tab:'ref',fileName:'',sheets:null,err:null,sel:null,pv:null,logged:false,refKind:''};go('import')">Загрузить из файла</button>${exportBtn("tRef","Справочник")}</header>
+  <div class="panel"><header><div style="flex:1"></div><button class="btn" onclick="impReset('ref');go('import')">Загрузить из файла</button>${exportBtn("tRef","Справочник")}</header>
   <div class="body flush"><div class="tbl-wrap">${t}</div></div></div>`;
 }
 
@@ -468,6 +541,42 @@ async function resetAll(){
   if(!r.ok) return showErrors(r);
   VIEW = "dash"; render();
 }
+const MEANING_NAMES = {pending:"На согласовании (не в расчёте)", approved:"Прошёл согласование", posted:"Проведён (в расчёте)", notposted:"Не проведён / распроведён", deleted:"Помечен на удаление"};
+let SM = null;
+function stateValues(){
+  const seen = new Map(); (DB.docs||[]).forEach(d=>[d.stage, d.statusRaw].forEach(v=>{ v = (v||"").trim(); if(v) seen.set(v.toLowerCase(), v); }));
+  (DB.settings.stateMap||[]).forEach(x=>seen.set(x.value.toLowerCase(), x.value)); return [...seen.values()].sort((a,b)=>a.localeCompare(b,"ru"));
+}
+function stateMapPanel(){
+  const S = DB.settings; if(!SM) SM = clone(S.stateMap||[]);
+  const vals = stateValues(); vals.forEach(v=>{ if(!SM.some(x=>x.value.toLowerCase()===v.toLowerCase())) SM.push({value:v, meaning:""}); });
+  const dirty = JSON.stringify(SM.filter(x=>x.value&&x.meaning))!==JSON.stringify(S.stateMap||[]);
+  return `<div class="panel"><header><h2>Таблица соответствия состояний ERP</h2><span class="tzref">ТР-106, ТР-107</span></header><div class="body stack">
+    <span class="muted">Какие значения «Текущего этапа» и «Текущего состояния» ERP означают «прошёл согласование», «проведён» и «помечен на удаление». Список значений даёт программист 1С; ниже — все значения, встретившиеся в загрузках. Не заданное значение определяется по смыслу слова, а при загрузке выводится предупреждение. Если у документа несколько оснований — берётся «Помечен на удаление», затем «Не проведён», затем «Проведён».</span>
+    <table class="mini"><thead><tr><th>Значение ERP</th><th>Означает</th><th></th></tr></thead><tbody>
+    ${SM.map((x,i)=>`<tr><td>${x._new?`<input type="text" value="${esc(x.value)}" onchange="SM[${i}].value=this.value.trim();render()">`:`<span class="notr">${esc(x.value)}</span>`}</td>
+      <td><select onchange="SM[${i}].meaning=this.value;render()"><option value="">— не задано (по смыслу слова) —</option>${Object.entries(MEANING_NAMES).map(([k,n])=>`<option value="${k}" ${x.meaning===k?"selected":""}>${esc(n)}</option>`).join("")}</select></td>
+      <td><button class="btn sm ghost" onclick="SM.splice(${i},1);render()">✕</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted">Значений пока нет — добавьте вручную или загрузите «Историю согласования»</td></tr>`}</tbody></table>
+    <div class="row"><button class="btn sm" onclick="SM.push({value:'',meaning:'',_new:true});render()">Добавить значение</button>
+      <button class="btn sm primary" ${dirty?"":"disabled"} onclick="saveStateMap()">Сохранить таблицу</button>${dirty?`<span class="amber">Есть несохранённые изменения</span>`:""}</div></div></div>`;
+}
+async function saveStateMap(){
+  const v = SM.filter(x=>x.value && x.meaning).map(x=>({value:x.value, meaning:x.meaning}));
+  const r = await mutate("/api/settings", {key:"stateMap", value:v});
+  if(!r.ok) return showErrors(r);
+  SM = null; toast("Таблица соответствия сохранена. Применится к следующей загрузке.", {lvl:"ok"});
+}
+const MAP_KIND_NAMES = {org:"Организация", acc:"Банк / счёт", cur:"Валюта", dept:"Подразделение", cf:"Тип расхода CF", zone:"Зона ответственности"};
+function mapTarget(m){ const L = {org:DB.orgs, cur:DB.currencies, dept:DB.depts, cf:DB.cfTypes, zone:DB.zones}[m.kind]; const x = m.kind==="acc" ? acc(m.target) : (L||[]).find(y=>y.id===m.target); return x ? (x.name||x.code) : m.target; }
+function mappingsPanel(){
+  const M = DB.mappings||[];
+  return `<div class="panel"><header><h2>Запомненные сопоставления</h2><span class="tzref">ТР-109</span></header><div class="body ${M.length?"flush":""}">
+    ${M.length?`<table class="mini"><thead><tr><th>Справочник</th><th>Значение в файле</th><th>Сопоставлено с</th><th>Кто, когда</th><th></th></tr></thead><tbody>
+    ${M.map(m=>`<tr><td>${esc(MAP_KIND_NAMES[m.kind]||m.kind)}</td><td class="notr">${esc(m.raw)}</td><td>${esc(mapTarget(m))}</td><td class="muted">${esc(m.u||"")} · ${fmtDT(m.t)}</td>
+      <td><button class="btn sm ghost" onclick="forgetMapping('${m.kind}','${jsq(m.raw)}')">Забыть</button></td></tr>`).join("")}</tbody></table>`
+    :`<span class="muted">Пусто. Сопоставление появляется, когда при загрузке значение из файла выбирают в справочнике — дальше оно подставляется автоматически.</span>`}</div></div>`;
+}
+async function forgetMapping(kind, raw){ if(!confirm(`Забыть сопоставление «${raw}»?`)) return; showErrors(await mutate("/api/mappings", {kind, raw, target:""})); }
 function viewSettings(){
   const S = DB.settings;
   const prevEnd = (()=>{ const d = new Date(CUR.date+"T00:00:00Z"); d.setUTCDate(1); d.setUTCDate(0); return d.toISOString().slice(0,10); })();
@@ -487,10 +596,21 @@ function viewSettings(){
     <div class="panel"><header><h2>Переход на автообмен с 1С</h2><span class="tzref">ТР-72</span></header><div class="body stack">
       <input type="date" value="${S.switchDate}" onchange="setSetting('switchDate',this.value,'Дата перехода на автообмен')" style="max-width:200px">
       <span class="muted">С этой даты ручной ввод поступлений, конвертаций и перебросок отключается; ручные документы с датой не раньше даты перехода исключаются и заменяются документами из 1С. Ручные документы до этой даты остаются в учёте.</span></div></div>
+    <div class="panel"><header><h2>Загрузка из ERP</h2><span class="tzref">ТР-89, ТР-90</span></header><div class="body stack">
+      <label class="fld"><span>Форма котировки в поле «Курс» файла</span><select onchange="setSetting('rateForm',this.value,'Форма котировки')" style="max-width:360px">
+        <option value="perUsd" ${(S.rateForm||"perUsd")==="perUsd"?"selected":""}>единиц валюты за 1 USD (3,6725 для AED)</option>
+        <option value="usdPer" ${S.rateForm==="usdPer"?"selected":""}>USD за 1 единицу валюты (0,2723 для AED)</option></select></label>
+      <label class="chk"><input type="checkbox" ${S.holdClosed?"checked":""} onchange="setSetting('holdClosed',this.checked,'Проверка изменений в закрытом периоде')"> Существенные изменения в закрытом периоде тоже держать до проверки казначеем</label>
+      <span class="muted">По умолчанию выключено: в закрытом периоде изменение ERP принимается сразу и попадает в список «Изменения в закрытом периоде» (ТР-56, ТР-89). В открытом периоде существенное изменение уже учтённого документа всегда ждёт проверки казначея, а в расчёте до проверки остаётся прежнее движение (ТР-85).</span></div></div>
+    <div class="panel"><header><h2>Сверка с остатками 1С</h2><span class="tzref">ТР-41…43, ТР-55</span></header><div class="body stack">
+      <label class="chk"><input type="checkbox" ${S.recon1c?"checked":""} onchange="setSetting('recon1c',this.checked,'Сверка с остатками 1С')"> Сверка с 1С включена</label>
+      <span class="muted">Пока актуальных остатков в 1С нет, главный контроль — Daily Balance, а сверка с 1С выключена: отчёт «Сверка с 1С», уведомления о расхождениях и блокировка сверенных дней не действуют. Включите, когда 1С начнёт отдавать остатки.</span></div></div>
     <div class="panel"><header><h2>Защита от двойного учёта</h2><span class="tzref">ТР-70</span></header><div class="body stack">
       <span class="muted">Строки СБДС и РКО с этими хозяйственными операциями пропускаются при загрузке файла — они уже введены вручную. По одной на строку. Точный список — открытый вопрос ТЗ.</span>
       <textarea rows="5" onchange="setSetting('excludedOps',this.value.split('\\n').map(x=>x.trim()).filter(Boolean),'Изменение списка исключаемых операций')">${esc(S.excludedOps.join("\n"))}</textarea></div></div>
   </div>
+  <div class="split">${stateMapPanel()}${mappingsPanel()}</div>
+  <div class="panel"><header><h2>Daily Balance</h2><span class="tzref">ТР-91…105</span></header><div class="body row"><span class="muted">Время сдачи, календарь, допуски по валютам и позиции модуля — на отдельном экране.</span><button class="btn" onclick="go('dbsettings')">Настройки Daily Balance</button></div></div>
   <div class="panel"><header><h2>Данные прототипа</h2></header><div class="body row">
     <button class="btn" onclick="exportBackup()">Сохранить резервную копию (.json)</button>
     <label class="btn">Восстановить из копии<input type="file" accept=".json" style="display:none" onchange="importBackup(this)"></label>

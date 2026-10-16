@@ -724,3 +724,91 @@ tbody tr.sel td{background:#e3eee7!important}
 .btn.lg{height:42px;padding:0 20px;font-size:14.5px}
 .steps li.current{background:var(--ochre-soft);margin:0 -12px;padding-left:12px;padding-right:12px;border-radius:4px}
 .hero-empty{color:var(--green-ink)!important;font-weight:400!important}
+
+/* ============================================================
+   Единое ТЗ: состояния документов, реестр загрузки, Daily Balance
+   ============================================================ */
+/* МД-23, ТР-107: одно состояние на документ; зачёркнут только «Помечен на удаление» */
+tr.st-deleted td{color:var(--ink-3);text-decoration:line-through;text-decoration-color:#a8b3ad}
+tr.st-excluded td,tr.st-notposted td{color:var(--ink-3)}
+tr.st-excluded td a.lnk,tr.st-notposted td a.lnk{color:var(--ink-2)}
+tr.review td:first-child{box-shadow:inset 3px 0 0 var(--ochre)}
+.review-box{display:block}
+.review-box table{margin-top:8px}
+.amber{color:var(--amber)}
+.tag.info{background:#e8eef6;color:#28456e;box-shadow:inset 0 0 0 1px #c8d5e8}
+.tag.big{font-size:13px;padding:4px 10px}
+table.mini{width:auto;min-width:0;font-size:12.5px}
+table.mini th,table.mini td{padding:4px 8px}
+.side-rule{margin:8px 0}
+fieldset.xrate{margin-top:10px}
+.sub{font-size:11.5px;color:var(--ink-3)}
+.legend{display:flex;gap:10px;font-size:12px}
+.legend span{padding:1px 8px;border-radius:3px}
+
+/* ТР-108, ТР-109: реестр загрузки */
+.reg-chips{margin-bottom:8px}
+.reg-wrap{max-height:62vh}
+table.registry td{vertical-align:top;font-size:12.5px}
+table.registry .chg{color:var(--neg);font-weight:600;border-bottom:1px dotted var(--neg);cursor:help}
+tr.reg-changed td{background:var(--ochre-soft)}
+tr.reg-error td{background:var(--neg-soft)}
+tr.reg-excluded td{color:var(--ink-3)}
+tr.reg-skipped td,tr.reg-same td{color:var(--ink-2)}
+.reg-msg{min-width:220px;max-width:380px;white-space:normal}
+.reg-msg div{margin-bottom:2px}
+table.registry .raw{display:block;font-size:11px;color:var(--neg);text-decoration:line-through;margin-bottom:2px}
+table.registry select.fix,table.registry input.fix{min-width:160px;max-width:240px;height:28px;font-size:12.5px;border-color:var(--neg-line);background:#fff}
+.fixtag{font-size:11px}
+
+/* Daily Balance — окно казначея */
+.db-card header h2{display:flex;gap:8px;align-items:center}
+.db-card.noacc{opacity:.92}
+.db-grid{display:grid;grid-template-columns:minmax(240px,1fr) minmax(320px,1.4fr) minmax(220px,.8fr);gap:20px;align-items:start}
+@media (max-width:1100px){.db-grid{grid-template-columns:1fr}}
+.db-calc{border:1px solid var(--line);border-radius:6px;background:var(--band);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.db-calc>div{display:flex;justify-content:space-between;gap:10px;font-size:13px}
+.db-calc>div span{color:var(--ink-3)}
+.db-calc>div b{font-variant-numeric:tabular-nums}
+.db-calc>div.ok b{color:var(--pos)}
+.db-calc>div.bad{background:var(--neg-soft);margin:0 -6px;padding:2px 6px;border-radius:3px}
+.db-calc>div.bad b{color:var(--neg)}
+.ksplit{border-top:1px dashed var(--line);padding-top:6px;margin-top:2px;font-size:12px}
+.ksplit div{display:flex;justify-content:space-between;color:var(--ink-2)}
+.sticky-foot{position:sticky;bottom:0;z-index:5;box-shadow:0 -4px 14px rgba(23,32,28,.08)}
+
+/* Daily Balance — шапка-итог, сводная таблица, сверка */
+.db-head{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 14px}
+.db-head>div{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:8px 14px;min-width:150px;display:flex;flex-direction:column}
+.db-head>div span{font-size:12px;color:var(--ink-3)}
+.db-head>div b{font-size:17px;font-variant-numeric:tabular-nums}
+.db-head>div small{font-size:11.5px;color:var(--ink-3)}
+.db-head>div.ok{border-color:#b9d1c2}
+.db-head>div.warn{background:var(--ochre-soft);border-color:var(--ochre-line)}
+.db-head>div.warn b{color:var(--amber);font-size:14px}
+.db-head>div.bad{background:var(--neg-soft);border-color:var(--neg-line)}
+.db-head>div.bad b{color:var(--neg);font-size:14px}
+.db-cell{display:inline-flex;flex-direction:column;align-items:flex-end;cursor:pointer;color:inherit;text-decoration:none;padding:1px 4px;border-radius:3px}
+.db-cell:hover{background:var(--accent-soft)}
+.db-cell small{font-size:10.5px;color:var(--ink-3);line-height:1.1}
+.db-cell sup{font-size:9.5px;color:#28456e;margin-left:2px}
+.db-stale,.legend .db-stale{background:var(--ochre-soft);color:var(--amber)}
+.db-noacc,.legend .db-noacc{background:#eceff3;color:#4d5a6a}
+.db-corr,.legend .db-corr{background:#e8eef6;color:#28456e}
+table.db-pivot tr.grp td{background:var(--band);border-top:1px solid var(--line)}
+tr.detail>td{background:#fafbf9;padding:10px 12px 14px}
+.db-detail{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:20px}
+@media (max-width:1100px){.db-detail{grid-template-columns:1fr}}
+.db-detail h4{margin:0 0 6px;font-size:13px}
+.db-detail ul{margin:4px 0;padding-left:18px;font-size:12.5px}
+.caret.open{transform:rotate(180deg)}
+.db-calc>div.ksplit{display:block}
+.ksplit div{display:flex;justify-content:space-between;gap:10px}
+.ksplit div span:first-child{color:var(--ink-2)}
+.db-detail{position:sticky;left:12px;max-width:calc(100vw - 330px);grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+table.registry tr.reg-note td{padding-top:0;border-top:0}
+table.registry tr.reg-note .reg-msg{position:sticky;left:12px;max-width:calc(100vw - 340px);display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12px}
+table.registry tr:has(+ tr.reg-note) td{border-bottom:0}
+.reg-msg div{margin:0}
+.roles .chk{display:flex;margin:4px 0}
+.fixrow{display:flex;gap:6px;align-items:center;margin-top:3px}

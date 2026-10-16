@@ -8,6 +8,7 @@ const RF = {
   rep38:{from:"", to:"", step:"month", wallets:[], sub:true, cur:""},
   rep40:{date:""},
   recon:{bad:false},
+  hist:{from:"", to:"", org:"", dept:"", cpty:"", state:""},
 };
 let DRILLS = [];
 const drillLink = (fn, html) => { DRILLS.push(fn); return `<a class="lnk" onclick="DRILLS[${DRILLS.length-1}]()">${html}</a>`; };
@@ -77,7 +78,7 @@ function viewRep37(){
   const curCells = bc => curs.map(c=>cell(bc[c])).join("");
   const partRows = (a, pred, lvl) => a.parts.filter(p=>F.zero || Math.abs(p.sum)>=0.005).sort((x,y)=>(nm(org(x.org))+nm(acc(x.acc))+curCode(x.cur)).localeCompare(nm(org(y.org))+nm(acc(y.acc))+curCode(y.cur),"ru")).map(p=>{
     const k = rateAt(p.cur,date); const usd = k ? r2(p.sum/k) : NaN;
-    const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?nm(acc(p.acc)):""].filter(Boolean).join(" · ");
+    const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?posLabel(p.acc,p.cur):""].filter(Boolean).join(" · ");
     const isBad = F.byAcc && bad.has(p.acc);
     return `<tr class="part ${isBad?"bad":""}"><td style="padding-left:${lvl*20+44}px">${drillLink(()=>showFacts(label, f=>pred(f) && f.date<=date && (!F.byOrg||f.org===p.org) && (!F.byAcc||f.acc===p.acc) && f.cur===p.cur), esc(label))}
       ${isBad?` <span class="tag off" title="ТР-42">расхождение</span>`:""}</td>
@@ -95,7 +96,7 @@ function viewRep37(){
   <div class="toolbar">
     <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep37.date=this.value;render()"></label>
     <div class="fld"><span>Разбить по</span><div class="chips">
-      ${chip(F.byOrg,"RF.rep37.byOrg=!RF.rep37.byOrg;render()","юрлицам")}${chip(F.byAcc,"RF.rep37.byAcc=!RF.rep37.byAcc;render()","счетам и кассам")}</div></div>
+      ${chip(F.byOrg,"RF.rep37.byOrg=!RF.rep37.byOrg;render()","юрлицам")}${chip(F.byAcc,"RF.rep37.byAcc=!RF.rep37.byAcc;render()","позициям (счёт × валюта)")}</div></div>
     <div class="fld"><span>Показать</span><div class="chips">${chip(F.zero,"RF.rep37.zero=!RF.rep37.zero;render()","нулевые")}</div></div>
     <div class="grow"></div>
     ${allIds.length?`<div class="row tb-actions"><button type="button" class="btn ghost" onclick="R37C=new Set();render()">Развернуть всё</button><button type="button" class="btn ghost" onclick="R37C=new Set(${esc(JSON.stringify(allIds))});render()">Свернуть</button></div>`:""}
@@ -294,7 +295,9 @@ function viewRecon(){
   const badN = rows.filter(r=>Math.abs(r.diff)>=0.005).length;
   const okN = rows.length - badN; const badSum = {}; rows.forEach(r=>{ if(Math.abs(r.diff)>=0.005) badSum[r.cur]=(badSum[r.cur]||0)+r.diff; });
   const shownRows = RF.recon.bad ? rows.filter(r=>Math.abs(r.diff)>=0.005) : rows;
-  return `${repHeader("Сверка с 1С","ТР-41…43",`Главный контроль: сумма всех кошельков на счёте или в кассе равна остатку в 1С. Остатки 1С загружаются файлом (ТР-65), сверка — на дату загруженных остатков. Работа не блокируется, но день без расхождений закрывается для правки (ТР-55).`)}
+  const off = !DB.settings.recon1c;
+  return `${off?`<div class="alert warn">Сверка с остатками 1С выключена: главный контроль — Daily Balance (раздел 7). Включится в «Период и настройки», когда в 1С появятся актуальные остатки (ТР-41…43). Расхождения ниже — справочно, уведомления не отправляются и дни не блокируются.</div>`:""}
+  ${repHeader("Сверка с 1С","ТР-41…43",`Главный контроль: сумма всех кошельков на счёте или в кассе равна остатку в 1С. Остатки 1С загружаются файлом (ТР-65), сверка — на дату загруженных остатков. Работа не блокируется, но день без расхождений закрывается для правки (ТР-55).`)}
   ${rows.length?`<div class="summary">
     <div class="sum-item"><b>${rows.length}</b><span>счетов и касс сверено</span></div>
     <div class="sum-item"><b class="pos">${okN}</b><span>сходятся с 1С</span></div>
@@ -303,7 +306,7 @@ function viewRecon(){
   <div class="panel"><header><div class="chips">${chip(!RF.recon.bad,"RF.recon.bad=false;render()",`Все · ${rows.length}`)}${chip(RF.recon.bad,"RF.recon.bad=true;render()",`С расхождением · ${badN}`)}</div>
     <div style="flex:1"></div>${isAdmin(u)?`<button class="btn" onclick="IMP.tab='bal';go('import')">Загрузить остатки 1С</button>`:""}${exportBtn("tRec","Сверка")}</header>
   <div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="tRec" class="sortable">
-    <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th>Дата сверки</th><th class="num">Остаток в 1С</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Расхождение с</th><th></th></tr></thead>
+    <thead><tr><th>Организация</th><th>Счёт или касса</th><th>Валюта позиции</th><th>Дата сверки</th><th class="num">Остаток в 1С</th><th class="num">Сумма кошельков</th><th class="num">Расхождение</th><th>Расхождение с</th><th></th></tr></thead>
     <tbody>${shownRows.map(r=>{ const bad = Math.abs(r.diff)>=0.005; const from = r.since || r.date;
       const lastOk = r.hist.filter(h=>h.date<from && Math.abs(h.diff)<0.005).map(h=>h.date).pop();
       return `<tr class="${bad?"bad":""}"><td>${esc(nm(org(r.org)))}</td><td>${esc(nm(r.a))}</td><td>${esc(curCode(r.cur))}</td><td>${fmtD(r.date)}</td>
@@ -378,7 +381,7 @@ function viewDash(){
   const wl = (top.length===1 && subs.length ? subs : top).sort((a,b)=>b.usd-a.usd);
   const maxW = Math.max(1, ...wl.map(x=>Math.abs(x.usd)));
   const noW = list.filter(f=>!f.wallet && f.date<=CUR.date); const noWb = {}; noW.forEach(f=>noWb[f.cur]=(noWb[f.cur]||0)+f.sum); const noWusd = usdOf(noWb,CUR.date).usd;
-  const docsN = DB.docs.filter(d=>docCounts(d)).length, opsN = DB.ops.filter(o=>opCounts(o)).length, badN = badAccs().size;
+  const docsN = DB.docs.filter(d=>docCounts(d)).length, opsN = DB.ops.filter(o=>opCounts(o)).length, badN = badAccs().size, dbBad = nf.filter(n=>n.go==="dbrecon").length;
   const actions = canEnter(u) ? `<div class="quick">
       <button type="button" class="btn primary" onclick="newDoc('ПБДС')">Поступление на счёт</button>
       <button type="button" class="btn" onclick="newDoc('ПКО')">Поступление в кассу</button>
@@ -411,7 +414,8 @@ function viewDash(){
   <div class="facts">
     <a class="fact" onclick="go('docs')"><b>${docsN}</b><span>документов в расчёте</span></a>
     <a class="fact" onclick="go('ops')"><b>${opsN}</b><span>внутренних операций</span></a>
-    <a class="fact" onclick="go('recon')"><b class="${badN?"neg":""}">${badN}</b><span>счетов с расхождением</span></a>
+    ${S.recon1c ? `<a class="fact" onclick="go('recon')"><b class="${badN?"neg":""}">${badN}</b><span>счетов с расхождением с 1С</span></a>`
+      : allowedViews().has("dbrecon") ? `<a class="fact" onclick="go('dbrecon')"><b class="${dbBad?"neg":""}">${dbBad}</b><span>расхождений Daily Balance</span></a>` : ""}
     <div class="fact"><b>${S.closedTo?fmtD(S.closedTo):"—"}</b><span>период закрыт по</span></div>
   </div>
   ${A && done<steps.length ? `<div class="panel"><header><h2>Первичная настройка</h2><span class="hint">${done} из ${steps.length}</span>
@@ -420,4 +424,41 @@ function viewDash(){
   ${!A ? `<div class="panel"><header><h2>Мои кошельки</h2></header><div class="body stack">
       <span>${[...visibleWallets(u)].map(id=>esc(nm(wal(id)))).join(", ") || `<span class="muted">не назначены — обратитесь к администратору</span>`}</span>
       <span class="muted">${canEnter(u)?"Можно вводить внутренние операции и ручные документы по своим кошелькам в открытом периоде.":"Только просмотр."}</span></div></div>` : ""}`;
+}
+
+
+/* ---------- ТР-83. История согласования (отчёт ERP) ---------- */
+function histDocs(){
+  const F = RF.hist; const q = norm(F.cpty);
+  return DB.docs.filter(d=>d.source==="file" && (d.type==="СБДС"||d.type==="РКО")).filter(d=>
+    (!F.from || d.date>=F.from) && (!F.to || d.date<=F.to) && (!F.org || d.org===F.org)
+    && (!F.dept || d.lines.some(l=>l.dept===F.dept)) && (!q || d.lines.some(l=>norm(l.cpty).includes(q)))
+    && (!F.state || (F.state.startsWith("raw:") ? (d.statusRaw===F.state.slice(4) || d.stage===F.state.slice(4)) : docState(d)===F.state)))
+    .sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
+}
+function viewHist(){
+  const F = RF.hist; const list = histDocs(); const shown = list.slice(0, 1000);
+  const raws = [...new Set(DB.docs.filter(d=>d.source==="file").flatMap(d=>[d.stage, d.statusRaw]).filter(Boolean))].sort();
+  return `<h1>История согласования <span class="tzref">ТР-83</span></h1>
+  <p class="lede">Все документы отчёта ERP «История согласования» за период — независимо от этапа, состояния и оплаты. Само наличие в отчёте движения не создаёт (ТР-82): в остаток документ входит только по ТР-07. Состояние ERP переводится в состояние документа по таблице соответствия (ТР-106).</p>
+  <div class="toolbar">
+    <label class="fld"><span>Период с</span><input type="date" value="${F.from}" onchange="RF.hist.from=this.value;render()"></label>
+    <label class="fld"><span>по</span><input type="date" value="${F.to}" onchange="RF.hist.to=this.value;render()"></label>
+    <label class="fld"><span>Организация</span><select onchange="RF.hist.org=this.value;render()">${opts(DB.orgs,F.org,{empty:"Все организации"})}</select></label>
+    <label class="fld"><span>Подразделение</span><select onchange="RF.hist.dept=this.value;render()">${optsTree(DB.depts,F.dept,"Все подразделения")}</select></label>
+    <label class="fld"><span>Получатель</span><input type="search" value="${esc(F.cpty)}" placeholder="часть названия" onchange="RF.hist.cpty=this.value;render()"></label>
+    <label class="fld"><span>Состояние</span><select onchange="RF.hist.state=this.value;render()"><option value="">Все</option>
+      <optgroup label="Состояние документа">${Object.entries(STATE_NAMES).map(([k,t])=>`<option value="${k}" ${F.state===k?"selected":""}>${t}</option>`).join("")}</optgroup>
+      ${raws.length?`<optgroup label="Этап / состояние ERP">${raws.map(r=>`<option value="raw:${esc(r)}" ${F.state==="raw:"+r?"selected":""} class="notr">${esc(r)}</option>`).join("")}</optgroup>`:""}</select></label>
+    <div class="grow"></div>
+    ${exportBtn("tHist","История согласования")}
+  </div>
+  <div class="panel"><header><h2>${list.length} ${plural(list.length,"документ","документа","документов")}</h2>${list.length>1000?`<span class="hint">показаны первые 1000</span>`:""}</header>
+  <div class="body flush"><div class="tbl-wrap"><table id="tHist" class="list-t sortable"><thead><tr><th>Дата документа ERP</th><th>Номер ERP</th><th>Тип документа ERP</th><th>Организация и счёт</th><th>Получатель</th><th>Подразделение</th><th class="num">Сумма документа</th><th>Текущий этап</th><th>Текущее состояние</th><th>Состояние</th><th>Дата проведения банком</th></tr></thead>
+  <tbody>${shown.map(d=>`<tr class="clickable ${docRowClass(d)}" onclick="openDoc('${d.id}')"><td class="nowrap">${fmtD(d.date)}</td><td><a class="lnk">${esc(d.no1c||"—")}</a><div class="sub">${d.type}</div></td><td>${esc(d.erpType||"")}</td>
+    <td>${esc(nm(org(d.org)))}<div class="sub">${esc(posLabel(d.acc,d.cur))}</div></td><td>${esc([...new Set(d.lines.map(l=>l.cpty).filter(Boolean))].join(", "))}</td>
+    <td>${esc([...new Set(d.lines.map(l=>refName(DB.depts,l.dept)).filter(Boolean))].join(", "))}</td>
+    <td class="num">${fmt(d.docSum!=null?d.docSum:r2(d.lines.reduce((t,l)=>t+l.sum,0)))}<div class="sub">${esc(curCode(d.cur))}</div></td>
+    <td class="notr">${esc(d.stage||"")}</td><td class="notr">${esc(d.statusRaw||"")}</td><td>${docStateTag(d)}</td><td class="nowrap">${d.bankDate?fmtD(d.bankDate):""}</td></tr>`).join("")
+    || `<tr><td colspan="11" class="empty-cell">Документов нет. Загрузите файл «История согласования» в разделе «Загрузка файлов».</td></tr>`}</tbody></table></div></div></div>`;
 }
