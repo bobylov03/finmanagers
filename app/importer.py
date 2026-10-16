@@ -241,9 +241,16 @@ def _num(v):
 def preview_exp(C, p):
     sheets = _sheets(p)
     fixes = p.get("fixes") or {}
-    fmt_ = detect_format(sheets[0]["rows"])
+    # лист с данными ищется по заголовкам: в книге могут быть листы-пояснения
+    ok_ = lambda s_, spec, req: not [k for k in map_header(s_["rows"], spec)[2] if k in req]
+    sh = next((s_ for s_ in sheets if ok_(s_, HIST_SPEC, HIST_REQ)), None)
+    if sh:
+        fmt_ = "hist"
+    else:
+        sh = next((s_ for s_ in sheets if ok_(s_, EXP_SPEC, EXP_REQ)), None)
+        fmt_ = "tr61" if sh else detect_format(sheets[0]["rows"])
+        sh = sh or sheets[0]
     SPEC, REQ = (HIST_SPEC, HIST_REQ) if fmt_ == "hist" else (EXP_SPEC, EXP_REQ)
-    sh = next((s_ for s_ in sheets if not [k for k in map_header(s_["rows"], SPEC)[2] if k in REQ]), sheets[0])
     hi, m, missing = map_header(sh["rows"], SPEC)
     errors, warns, skip70, skip_out, registry = [], [], [], [], []
     miss = [k for k in missing if k in REQ]
@@ -751,7 +758,8 @@ def apply_ref(C, u, p, file_name):
 
 # ======================= остатки 1С для сверки (ТР-65) =======================
 def preview_bal(C, p):
-    sh = _sheets(p)[0]
+    shs = _sheets(p)
+    sh = next((s_ for s_ in shs if not [k for k in map_header(s_["rows"], BAL_SPEC)[2] if k != "cur"]), shs[0])
     hi, m, missing = map_header(sh["rows"], BAL_SPEC)
     errors, items = [], []
     miss = [k for k in missing if k != "cur"]
