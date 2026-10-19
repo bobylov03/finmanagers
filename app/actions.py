@@ -12,7 +12,7 @@ from .logic import (DOC_TYPES, MANUAL_OPS, OP_KINDS, ROLES, RULE_FIELDS, RULE_OP
                     movement_snap, doc_counts,
                     can_enter, cur_code, descendants, doc_snap, facts, has, in_closed, is_active_at, is_admin, line_visible, manual_allowed,
                     match_rule, needs_formalizing, nm, op_complete, op_legs, op_snap, own_wallets, period_error, rate_at, to_usd, wallet_closed_at,
-                    diff_text, is_usd, visible_wallets)
+                    diff_text, is_usd, visible_wallets, line_parts)
 from .util import fmt, fmt_d, is_num, now_iso, prev_month_end, r2, today_iso, uid, valid_iso
 
 
@@ -316,6 +316,42 @@ def assign_wallets(C, u, doc_id, changes):
     log = []
     for ch in changes or []:
         where, wid = str(ch.get("where")), s(ch.get("wallet")) or None
+        if ch.get("split") is not None and where.isdigit():
+            # ТР-54: распределение строки между кошельками — сумма частей равна сумме строки ERP с точностью до копейки
+            try:
+                tgt = d["lines"][int(where)]
+            except IndexError:
+                raise ApiError(["Неверная строка"])
+            if not all(line_visible(C, u, p_["wallet"]) and (not p_["wallet"] or can_edit_wallet(C, u, p_["wallet"])) for p_ in line_parts(tgt)):
+                raise Forbidden("Строка относится к чужому кошельку")
+            parts = []
+            for p_ in ch.get("split") or []:
+                sm, w_ = num(p_.get("sum")), s(p_.get("wallet")) or None
+                if sm is None or sm <= 0:
+                    raise ApiError([f"Строка {int(where)+1}: сумма каждой части должна быть больше нуля"])
+                if w_:
+                    if not C.get("wallets", w_):
+                        raise ApiError(["Неизвестный кошелёк"])
+                    if not can_edit_wallet(C, u, w_):
+                        raise Forbidden("Кошелёк не ваш")
+                    if wallet_closed_at(C, w_, d["date"]):
+                        raise ApiError(["Кошелёк закрыт (ТР-25)"])
+                parts.append({"sum": r2(sm), "wallet": w_})
+            if len(parts) == 1:
+                parts = []
+                wid = parts and parts[0]["wallet"] or (s((ch.get("split") or [{}])[0].get("wallet")) or None)
+            if parts:
+                diff = r2(sum(p_["sum"] for p_ in parts) - (tgt.get("sum") or 0))
+                if abs(diff) >= 0.005:
+                    raise ApiError([f"Строка {int(where)+1}: сумма частей {fmt(r2(sum(p_['sum'] for p_ in parts)))} не равна сумме строки {fmt(tgt.get('sum'))} {cur_code(C, d.get('cur'))} — расхождение {fmt(diff)} {cur_code(C, d.get('cur'))} (ТР-54)"])
+                old = "; ".join(f"{nm(C.get('wallets', p_['wallet'])) if p_['wallet'] else 'без кошелька'} {fmt(p_['sum'])}" for p_ in line_parts(tgt))
+                tgt["split"], tgt["wallet"], tgt["wsrc"], tgt["rule"] = parts, None, "split", None
+                log.append(f"строка {int(where)+1}: {old} → " + "; ".join(f"{nm(C.get('wallets', p_['wallet'])) if p_['wallet'] else 'без кошелька'} {fmt(p_['sum'])}" for p_ in parts))
+                continue
+            if tgt.get("split"):
+                tgt["split"] = []
+                log.append(f"строка {int(where)+1}: распределение по кошелькам снято")
+            ch = {"where": where, "wallet": wid}
         if where in ("from", "to"):
             if d["type"] != "ПЕР":
                 raise ApiError(["Неверная строка"])
@@ -384,7 +420,7 @@ def validate_op(C, u, o, post):
         if not o.get(key) or not C.get("wallets", o[key]):
             e.append(f"Не выбран {label.lower()}")
     if o.get("from") and o["from"] == o.get("to"):
-        e.append("Отправитель и получатель совпадают")
+        e.append("Операция внутри одного кошелька не имеет смысла: выберите разные кошельки отправителя и получателя")
     if o.get("from") and wallet_closed_at(C, o["from"], o["date"]) and o["kind"] != "closeDiv":
         e.append(f"Кошелёк «{nm(C.get('wallets', o['from']))}» закрыт (ТР-25)")
     if o.get("to") and wallet_closed_at(C, o["to"], o["date"]):
@@ -413,21 +449,23 @@ def validate_op(C, u, o, post):
         if not (is_num(G.get("rate")) and G["rate"] > 0):
             e.append(f"{t}: не указан курс к USD")
     if post or o["kind"] != "exchange":
-        chk(o["leg1"], "Нога 1" if o["kind"] == "exchange" else "Счёт")
+        chk(o["leg1"], "Операция 1" if o["kind"] == "exchange" else "Счёт")
     if o["kind"] == "exchange" and post:
-        chk(o["leg2"], "Нога 2 (документ не проводится без второй ноги)")
+        chk(o["leg2"], "Операция 2 (документ не проводится без второй операции)")
     for L in ("leg1", "leg2") if o["kind"] == "exchange" else ("leg1",):
         a = C.acc(o[L].get("acc"))
         if a and o[L].get("cur") not in acc_curs(a):
-            e.append(f"{'Нога 1' if L == 'leg1' else 'Нога 2'}: не выбрана валюта счёта")
+            e.append(f"{'Операция 1' if L == 'leg1' else 'Операция 2'}: не выбрана валюта счёта")
     if o["kind"] == "exchange":
         a, b = o["leg1"], o["leg2"]
         if a.get("acc") and b.get("acc") and a["acc"] == b["acc"] and a.get("cur") == b.get("cur"):
-            e.append("Ноги обмена должны быть на разных позициях")
+            e.append("Операции обмена должны быть на разных позициях")
         if o.get("sameCur") and a.get("cur") and b.get("cur") and a["cur"] != b["cur"]:
-            e.append("Обмен в одной валюте: валюта ноги 2 должна совпадать с валютой ноги 1 (ТР-77)")
+            e.append("Обмен в одной валюте: валюта операции 2 должна совпадать с валютой операции 1 (ТР-77)")
+        if not o.get("sameCur") and a.get("cur") and b.get("cur") and a["cur"] == b["cur"]:
+            e.append("Обмен в разной валюте: счёт операции 2 должен быть в другой валюте")
         if o.get("sameCur") and is_num(a.get("sum")) and is_num(b.get("sum")) and abs(a["sum"] - b["sum"]) >= 0.005:
-            e.append("Обмен в одной валюте: сумма ноги 2 равна сумме ноги 1 (ТР-77)")
+            e.append("Обмен в одной валюте: сумма операции 2 равна сумме операции 1 (ТР-77)")
     return e
 
 
@@ -470,14 +508,21 @@ def save_op(C, u, p):
          "posted": False, "deleted": False, "linkedDoc": orig.get("linkedDoc") if orig else None, "versions": orig["versions"] if orig else []}
     if kind == "exchange":
         if o["sameCur"] and o["leg1"]["sum"] is not None:
-            o["leg2"]["sum"] = o["leg1"]["sum"]          # ТР-77: сумма ноги 2 = сумме ноги 1, не редактируется
+            o["leg2"]["sum"] = o["leg1"]["sum"]          # ТР-77: сумма операции 2 = сумме операции 1, не редактируется
+            if is_num(o["leg1"].get("rate")):
+                o["leg2"]["rate"] = o["leg1"]["rate"]    # один курс на обе операции
         elif is_num(o["leg1"]["sum"]) and is_num(o["leg2"]["sum"]) and o["leg1"]["sum"] > 0:
             # ТР-112: курс обмена хранится с 6 знаками; введённый пользователем курс сохраняется как есть,
             # если суммы с ним согласованы (округляются только суммы до центов), иначе считается из сумм
-            x = num(src.get("xrate"))
+            # котировка: xdir «21» — единиц валюты 2 за 1 единицу валюты 1, «12» — наоборот (84 RUB за 1 USD)
+            x, xdir = num(src.get("xrate")), ("12" if src.get("xdir") == "12" else "21")
             s1, s2 = o["leg1"]["sum"], o["leg2"]["sum"]
-            o["xrate"] = round(x, 6) if x and x > 0 and abs(r2(s1 * x) - s2) <= 0.011 else round(s2 / s1, 6)
-            o["leg2"]["xrate"] = o["xrate"]
+            k = (1 / x if xdir == "12" else x) if x and x > 0 else None
+            if k and abs(r2(s1 * k) - s2) <= max(0.011, s2 * 1e-7):
+                o["xrate"] = round(x, 6)
+            else:
+                o["xrate"] = round(s1 / s2 if xdir == "12" else s2 / s1, 6)
+            o["leg2"]["xrate"], o["leg2"]["xdir"] = o["xrate"], xdir
     errors = []
     ld = s(src.get("linkedDoc")) if not orig else None
     if ld:
@@ -620,7 +665,11 @@ def close_plan_for(C, w, closed_from):
     pe = period_error(C, closed_from)
     if pe:
         raise ApiError([pe])
-    bal = [(k, v) for k, v in balances(C, closed_from, [f for f in facts(C) if f["wallet"] == w["id"]]).items() if abs(v) >= 0.005]
+    wf = [f for f in facts(C) if f["wallet"] == w["id"]]
+    pend = [f for f in wf if f.get("sbds") and f["docDate"] <= closed_from and f["date"] > closed_from]
+    if pend:
+        raise ApiError([f"У кошелька есть платежи СБДС, ещё не исполненные банком ({len(pend)}): закрыть можно после их исполнения — иначе фактический остаток после закрытия уйдёт в минус (ТР-07, ТР-25)"])
+    bal = [(k, v) for k, v in balances(C, closed_from, wf).items() if abs(v) >= 0.005]
     neg = [(k, v) for k, v in bal if v < 0]
     if neg:
         raise ApiError(["Закрытие с отрицательным остатком запрещено, пока минус не покрыт финансированием (ТР-25): "

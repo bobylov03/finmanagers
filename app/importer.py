@@ -40,6 +40,7 @@ REF_KINDS = {
     "rates": {"name": "Курсы к USD", "spec": {"cur": ["Валюта"], "date": ["Дата"], "rate": ["Курс", "Курс к USD", "Единиц валюты за 1 USD"]}, "req": ["cur", "date", "rate"]},
     "orgs": {"name": "Организации", "spec": {"id": ID_AL, "name": ["Наименование"], "deact": ["Дата деактивации"]}, "req": ["id", "name"]},
     "accounts": {"name": "Банковские счета", "spec": {"id": ID_AL, "name": ["Наименование"], "org": ["Организация"], "cur": ["Валюта"], "bank": ["Банк"],
+                                                     "number": ["Номер счёта", "Номер счета", "Р/сч", "Р/с", "Расчётный счёт", "Расчетный счет"],
                                                      "accType": ["Вид счёта", "Вид счета", "Вид"], "deact": ["Дата деактивации"]}, "req": ["id", "name", "org", "cur"]},
     "cashboxes": {"name": "Кассы", "spec": {"id": ID_AL, "name": ["Наименование"], "org": ["Организация"], "cur": ["Валюта"], "deact": ["Дата деактивации"]}, "req": ["id", "name", "org", "cur"]},
     "cfTypes": {"name": "Типы расхода CF", "spec": {"id": ID_AL, "name": ["Наименование"], "deact": ["Дата деактивации"]}, "req": ["id", "name"]},
@@ -52,17 +53,28 @@ BAL_SPEC = {"date": ["Дата"], "acc": ["Счёт или касса", "Сче�
 KIND_NAMES = {"exp": "Документы 1С", "ref": "Справочники и курсы", "bal": "Остатки 1С"}
 
 
-def map_header(rows, spec):
-    hi = next((i for i, r in enumerate(rows) if r and any(txt(c) for c in r)), -1)
-    if hi < 0:
-        return -1, {}, list(spec)
-    head = [norm(c) for c in rows[hi]]
+def _match(row, spec):
+    head = [norm(c) for c in row]
     m = {}
     for k, al in spec.items():
         for i, h in enumerate(head):
-            if any(norm(a) == h for a in al):
+            if h and any(norm(a) == h for a in al):
                 m[k] = i
                 break
+    return m
+
+
+def map_header(rows, spec):
+    """Строка заголовков — первая непустая или, если в начале листа есть заголовок отчёта и строка номеров колонок
+    (выгрузка ERP), та из первых 20 строк, где совпало больше всего колонок."""
+    first = next((i for i, r in enumerate(rows) if r and any(txt(c) for c in r)), -1)
+    if first < 0:
+        return -1, {}, list(spec)
+    hi, m = first, _match(rows[first], spec)
+    for i in range(first + 1, min(len(rows), first + 20)):
+        mi = _match(rows[i] or [], spec)
+        if len(mi) > len(m):
+            hi, m = i, mi
     return hi, m, [k for k in spec if k not in m]
 
 
@@ -112,6 +124,7 @@ def norm_bool(v):
 def doc_sig(d):
     return json.dumps([d["type"], d["op"], d["no1c"], d["date"], d["org"], d["acc"], d["cur"], d["status"], d.get("approved") is not False, d["bankDone"],
                        d.get("bankDate") or "", d.get("stage") or "", d.get("erpType") or "", d.get("docSum"), d.get("rate"),
+                       d.get("bankName") or "", d.get("accNo") or "",
                        [[l["sum"], l["usd"], l.get("fileWallet") or "", l["dept"], l["cf"], l["zone"], l["cpty"], l["contract"], l["purpose"]]
                         for l in d["lines"]]], ensure_ascii=False)
 
@@ -145,7 +158,22 @@ HIST_REQ = ["sum", "type", "org", "acc", "cur", "docSum", "stage", "state", "gui
 HIST_HEAD = ["Сумма", "Тип", "Подразделение", "Заметки", "Получатель", "Организация", "Банк", "Валюта", "Сумма документа", "Курс",
              "Зона ответственности", "Текущий этап", "Текущее состояние", "Номер ERP", "GUID ERP", "Тип документа ERP", "Дата документа ERP",
              "Дата проведения банком", "Хозяйственная операция", "Тип расхода CF"]
-FIELD_NAMES = {"guid": "GUID", "type": "тип", "op": "хоз. операция", "no": "номер ERP", "date": "дата", "org": "организация", "acc": "счёт",
+# ТР-90 (v1.5.1): готовый отчёт ERP «История согласования» — 17 полей в утверждённом порядке. Этапа и состояния в отчёте нет:
+# признаки согласования, проведения и пометки на удаление приходят отдельно (ТР-91); «Банк» — банк, «Р/сч» — номер счёта.
+HIST17_SPEC = {
+    "guid": ["GUID документа (ERP)", "GUID документа ERP"], "no": ["Номер документа (ERP)", "Номер документа ERP"], "date": ["Дата документа (ERP)", "Дата документа ERP"],
+    "usd": ["Сумма (USD)", "Сумма USD"], "cf": ["Тип расхода CF"], "dept": ["Подразделение"], "purpose": ["Заметки"], "cpty": ["Получатель"],
+    "org": ["Организация"], "bank": ["Банк"], "accNo": ["Р/сч", "Р/с", "Расчётный счёт", "Расчетный счет", "Номер счёта"], "cur": ["Валюта"],
+    "docSum": ["Сумма в валюте документа"], "rate": ["Курс"], "bankDate": ["Дата проведения банком"], "op": ["Хозяйственная операция"],
+    "erpType": ["Тип документа ERP"],
+    # ТР-91: признаки состояния, если ERP передаст их в том же файле (необязательные колонки)
+    "status": ["Статус", "Состояние"], "approved": ["Согласован"], "deletedMark": ["Помечен на удаление", "Пометка удаления"],
+}
+HIST17_REQ = ["guid", "no", "date", "org", "accNo", "cur", "docSum"]
+HIST17_HEAD = ["GUID документа (ERP)", "Номер документа (ERP)", "Дата документа (ERP)", "Сумма (USD)", "Тип расхода CF", "Подразделение", "Заметки",
+               "Получатель", "Организация", "Банк", "Р/сч", "Валюта", "Сумма в валюте документа", "Курс", "Дата проведения банком",
+               "Хозяйственная операция", "Тип документа ERP"]
+FIELD_NAMES = {"guid": "GUID", "accNo": "Р/сч", "bank": "банк", "type": "тип", "op": "хоз. операция", "no": "номер ERP", "date": "дата", "org": "организация", "acc": "счёт",
                "cur": "валюта", "status": "состояние", "stage": "этап", "state": "состояние ERP", "approved": "согласование", "bankDate": "дата проведения банком",
                "sum": "сумма", "usd": "сумма USD", "docSum": "сумма документа", "rate": "курс", "dept": "подразделение", "cf": "тип расхода CF",
                "zone": "зона", "cpty": "получатель", "contract": "договор", "purpose": "назначение", "erpType": "тип документа ERP", "wallet": "кошелёк"}
@@ -159,6 +187,23 @@ def mapped(C, kind, v):
         return None
     m = C.get_map(kind, norm(v)) if hasattr(C, "get_map") else next((x for x in C.S["mappings"] if x["kind"] == kind and x["rawNorm"] == norm(v)), None)
     return m["target"] if m else None
+
+
+def _digits(v):
+    return "".join(ch for ch in txt(v) if ch.isdigit())
+
+
+def acc_by_number(accs, no, org=None):
+    """ТР-90: счёт по «Р/сч» — номер счёта из справочника; если номера в справочнике нет — однозначное вхождение номера в наименование."""
+    d = _digits(no)
+    if len(d) < 4:
+        return None
+    pool = [a for a in accs if not org or a.get("org") == org["id"]] or accs
+    exact = [a for a in pool if _digits(a.get("number")) == d]
+    if len(exact) == 1:
+        return exact[0]
+    inname = [a for a in pool if d in _digits(a.get("name")) or (len(d) >= 8 and _digits(a.get("name")) and _digits(a.get("name")).endswith(d[-8:]))]
+    return inname[0] if len(inname) == 1 else None
 
 
 def name_matches(lst, v):
@@ -243,14 +288,16 @@ def preview_exp(C, p):
     fixes = p.get("fixes") or {}
     # лист с данными ищется по заголовкам: в книге могут быть листы-пояснения
     ok_ = lambda s_, spec, req: not [k for k in map_header(s_["rows"], spec)[2] if k in req]
-    sh = next((s_ for s_ in sheets if ok_(s_, HIST_SPEC, HIST_REQ)), None)
-    if sh:
-        fmt_ = "hist"
-    else:
-        sh = next((s_ for s_ in sheets if ok_(s_, EXP_SPEC, EXP_REQ)), None)
-        fmt_ = "tr61" if sh else detect_format(sheets[0]["rows"])
-        sh = sh or sheets[0]
-    SPEC, REQ = (HIST_SPEC, HIST_REQ) if fmt_ == "hist" else (EXP_SPEC, EXP_REQ)
+    fmt_, sh = None, None
+    for f_, spec, req in (("erp17", HIST17_SPEC, HIST17_REQ), ("hist", HIST_SPEC, HIST_REQ), ("tr61", EXP_SPEC, EXP_REQ)):
+        sh = next((s_ for s_ in sheets if ok_(s_, spec, req)), None)
+        if sh:
+            fmt_ = f_
+            break
+    if not sh:   # ничего не подошло — сообщаем об отсутствующих колонках основного формата (ТР-90)
+        sh = sheets[0]
+        fmt_ = "tr61" if any(norm(c) == norm("GUID документа 1С") for r in sh["rows"][:20] for c in (r or [])) else "erp17"
+    SPEC, REQ = {"erp17": (HIST17_SPEC, HIST17_REQ), "hist": (HIST_SPEC, HIST_REQ), "tr61": (EXP_SPEC, EXP_REQ)}[fmt_]
     hi, m, missing = map_header(sh["rows"], SPEC)
     errors, warns, skip70, skip_out, registry = [], [], [], [], []
     miss = [k for k in missing if k in REQ]
@@ -267,6 +314,9 @@ def preview_exp(C, p):
     for i, r in enumerate(sh["rows"][hi + 1:]):
         if not r or not any(txt(c) for c in r):
             continue
+        first_txt = next((norm(c) for c in r if txt(c)), "")
+        if first_txt.startswith("итого") or first_txt.startswith("всего"):
+            continue   # строка итогов отчёта ERP
         n = hi + 2 + i
         fx = fixes.get(str(n)) or {}
         raw = {k: (fx[k] if k in fx else cell(r, m, k)) for k in SPEC}
@@ -278,21 +328,29 @@ def preview_exp(C, p):
              "bankDate": parse_date(g("bankDate")), "sum": parse_num(g("sum")), "wallet": None, "walletRaw": txt(g("wallet")),
              "dept": txt(g("dept")), "cf": txt(g("cf")), "zone": txt(g("zone")), "cpty": txt(g("cpty")), "contract": txt(g("contract")),
              "purpose": txt(g("purpose")), "erpType": txt(g("erpType")), "stage": txt(g("stage")), "stateRaw": txt(g("state") if fmt_ == "hist" else g("status")),
-             "errs": [], "warns": []}
+             "errs": [], "warns": [], "bankName": txt(g("bank")) if fmt_ == "erp17" else "", "accNo": txt(g("accNo")) if fmt_ == "erp17" else ""}
         R["mapped"] = []
         R["orgR"] = ref_lookup(C, "org", S["orgs"], g("org"), R["mapped"])
-        R["accR"] = ref_lookup(C, "acc", accs, g("acc"), R["mapped"])
+        if fmt_ == "erp17":
+            # счёт — по «Р/сч» (номер счёта из справочника), затем по запомненному сопоставлению, затем по названию
+            R["accRaw"] = R["accNo"] or R["bankName"]
+            R["accR"] = acc_by_number(accs, R["accNo"], R["orgR"]) or ref_lookup(C, "acc", accs, R["accRaw"], R["mapped"])
+            R["type"] = norm_type(g("erpType")) or (("РКО" if any(c["id"] == R["accR"]["id"] for c in S["cashboxes"]) else "СБДС") if R["accR"] else "СБДС")
+            R["typeRaw"] = txt(g("erpType"))
+            R["sum"] = _num(g("docSum"))   # временно; строки одного документа делятся по «Сумма (USD)» ниже (ТР-54)
+        else:
+            R["accR"] = ref_lookup(C, "acc", accs, g("acc"), R["mapped"])
 
         def E(msg, f=None, R=R, n=n):
             R["errs"].append({"f": f, "msg": msg}); errors.append({"row": n, "msg": msg})
         if not R["guid"]: E("пустой GUID документа", "guid")
-        if not R["type"]: E(f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС или РКО" if fmt_ == "hist" else f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС, РКО, ПБДС или ПКО", "type")
+        if not R["type"]: E(f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС или РКО" if fmt_ in ("hist", "erp17") else f"неизвестный тип «{R['typeRaw']}» — ожидается СБДС, РКО, ПБДС или ПКО", "type")
         if not R["date"]: E("неверная дата", "date")
         if not R["orgR"]:
             amb = name_matches(S["orgs"], g("org"))
             E(f"организация «{R['orgRaw']}» неоднозначна: {len(amb)} совпадения в справочнике — выберите" if len(amb) > 1 else f"неизвестная организация «{R['orgRaw']}»", "org")
         if not R["accR"]:
-            amb = name_matches(accs, g("acc"))
+            amb = name_matches(accs, R["accRaw"])
             E(f"счёт «{R['accRaw']}» неоднозначен: {len(amb)} счёта с таким названием — выберите из справочника (ТР-90)" if len(amb) > 1 else f"неизвестный счёт или касса «{R['accRaw']}»", "acc")
         if R["accR"] and R["orgR"] and R["accR"]["org"] != R["orgR"]["id"]:
             E(f"счёт «{R['accR']['name']}» не принадлежит организации «{R['orgR']['name']}»", "acc")
@@ -309,10 +367,25 @@ def preview_exp(C, p):
         elif R["accR"]:
             if len(acc_curs(R["accR"])) == 1: R["cur"] = acc_curs(R["accR"])[0]
             else: E("не указана валюта мультивалютного счёта", "cur")
-        if not math.isfinite(R["sum"]): E("пустая или неверная сумма", "sum")
-        elif R["sum"] <= 0: E("сумма должна быть больше нуля", "sum")
+        if not math.isfinite(R["sum"]) and fmt_ != "erp17": E("пустая или неверная сумма", "sum")
+        elif math.isfinite(R["sum"]) and R["sum"] <= 0: E("сумма должна быть больше нуля", "docSum" if fmt_ == "erp17" else "sum")
         # состояние (ТР-106 / ТР-07)
-        if fmt_ == "hist":
+        if fmt_ == "erp17":
+            # ТР-91: признаков в 17 полях нет — документ отчёта учитывается как проведённый и согласованный, если ERP не передала иное
+            R["status"], R["approved"] = "Проведён", True
+            if txt(g("status")): R["status"] = norm_status(g("status")) or "Проведён"
+            if txt(g("approved")): R["approved"] = norm_bool(g("approved"))
+            if txt(g("deletedMark")) and norm_bool(g("deletedMark")): R["status"] = "Помечен на удаление"
+            R["docSum"] = _num(g("docSum"))
+            if not math.isfinite(R["docSum"]): E("пустая или неверная сумма в валюте документа", "docSum")
+            rr = _num(g("rate"))
+            R["rate"] = None
+            if math.isfinite(rr) and rr > 0:
+                R["rate"] = rr if rate_form == "perUsd" else 1 / rr
+            elif txt(g("rate")) != "":
+                E("неверный курс", "rate")
+            R["usdRaw"] = g("usd")
+        elif fmt_ == "hist":
             R["status"], R["approved"], unk = map_state(C, g("stage"), g("state"))
             for x in unk:   # ТР-106: значение не задано в таблице соответствия — загрузка блокируется до сопоставления
                 unmapped.add(x)
@@ -365,6 +438,25 @@ def preview_exp(C, p):
             for R in lst:
                 R["errs"].append({"f": "guid", "msg": "дубль GUID: строки одного документа с разными реквизитами"})
                 errors.append({"row": R["n"], "msg": f"дубль GUID «{g_}»: строки одного документа с разными реквизитами"})
+        if lst[0]["fmt"] == "erp17" and not any(R["errs"] for R in lst):
+            # ТР-54: строки одного документа — суммы строк в валюте документа; в отчёте ERP сумма в валюте одна на документ,
+            # поэтому при нескольких строках она делится пропорционально «Сумма (USD)» строк, остаток копеек — в последнюю строку
+            ds = r2(lst[0]["docSum"])
+            if len(lst) == 1:
+                lst[0]["sum"] = ds
+            else:
+                us = [R["usd"] for R in lst]
+                if all(u is not None and math.isfinite(u) and u > 0 for u in us):
+                    tot_u, acc_ = sum(us), 0.0
+                    for j, R in enumerate(lst):
+                        R["sum"] = r2(ds - acc_) if j == len(lst) - 1 else r2(ds * us[j] / tot_u)
+                        acc_ += R["sum"]
+                        R["warns"].append({"f": "sum", "msg": f"сумма строки {fmt(R['sum'])} — доля документа {fmt(ds)} по «Сумма (USD)» (ТР-54)"})
+                else:
+                    for R in lst:
+                        R["errs"].append({"f": "usd", "msg": "несколько строк одного документа: для распределения суммы нужна «Сумма (USD)» в каждой строке (ТР-54)"})
+                        errors.append({"row": R["n"], "msg": f"GUID «{g_}»: нет «Сумма (USD)» для распределения по строкам"})
+            continue
         ds = lst[0].get("docSum")
         if lst[0]["fmt"] == "hist" and ds is not None and math.isfinite(ds) and all(math.isfinite(R["sum"]) for R in lst):
             tot = r2(sum(R["sum"] for R in lst))
@@ -406,7 +498,8 @@ def preview_exp(C, p):
                  "erpType": R["erpType"], "approved": R["approved"] if R["type"] == "СБДС" else True,
                  "bankDone": bool(R["bankDate"]) if R["type"] == "СБДС" else False,      # ТР-09: признак = дата заполнена
                  "bankDate": (R["bankDate"] or "") if R["type"] == "СБДС" else "",
-                 "docSum": r2(R["docSum"]) if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "lines": [], "_rows": [], "fixed": []}
+                 "docSum": r2(R["docSum"]) if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "lines": [], "_rows": [], "fixed": [],
+                 "bankName": R.get("bankName") or "", "accNo": R.get("accNo") or ""}
             docs[R["guid"]] = d
         d["_rows"].append(R)
         d["fixed"] += [f for f in R["fixed"] if f in ("type", "op", "no", "date", "org", "acc", "cur", "stage", "state", "status", "bankDate", "docSum", "rate", "erpType", "guid")]
@@ -434,7 +527,7 @@ def preview_exp(C, p):
                 R["changes"] = (ch_doc if i == 0 else []) + line_changes(C, e["lines"][i] if i < len(e["lines"]) else None, d["lines"][i], i)
             if len(e["lines"]) > len(d["lines"]):
                 d["_rows"][0]["changes"].append({"f": "lines", "before": str(len(e["lines"])), "after": str(len(d["lines"]))})
-            if is_significant(C, e, d):
+            if is_significant(C, e, d) and would_count(C, d):
                 signif.append(d["guid"])
             if in_closed(C, e["date"]) or in_closed(C, d["date"]): closed.append(d["guid"])
     for e in existing.values():
@@ -464,7 +557,8 @@ def reg_row(C, R):
             "docSum": R["docSum"] if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "state": R.get("status"), "stage": R.get("stage"),
             "stateRaw": R.get("stateRaw"), "bankDate": R.get("bankDate"), "op": R["op"], "dept": R["dept"], "cf": R["cf"], "zone": R["zone"], "cpty": R["cpty"],
             "purpose": R["purpose"], "erpType": R.get("erpType"), "errs": R["errs"], "warns": R["warns"], "fixed": R["fixed"], "raw": R["raw"],
-            "changes": R.get("changes", []), "fmt": R["fmt"], "orig": R.get("orig", {}), "mapped": R.get("mapped", []), "stateGuess": R.get("stateGuess", {})}
+            "changes": R.get("changes", []), "fmt": R["fmt"], "orig": R.get("orig", {}), "mapped": R.get("mapped", []), "stateGuess": R.get("stateGuess", {}),
+            "bankName": R.get("bankName", ""), "accNo": R.get("accNo", ""), "usd": R.get("usd")}
 
 
 def _show(C, f, v):
@@ -582,18 +676,20 @@ def apply_exp(C, u, p, file_name):
         lines = []
         for i, l in enumerate(n["lines"]):
             o = e["lines"][i] if i < len(e["lines"]) else None
-            if not l.get("fileWallet") and keep and o and line_sig(o) == line_sig(l) and o.get("wallet") and o.get("wsrc") != "rule":
-                lines.append(dict(l, wallet=o["wallet"], wsrc=o["wsrc"], rule=o.get("rule")))
+            if not l.get("fileWallet") and keep and o and line_sig(o) == line_sig(l) and (o.get("wallet") or o.get("split")) and o.get("wsrc") != "rule":
+                lines.append(dict(l, wallet=o.get("wallet"), wsrc=o["wsrc"], rule=o.get("rule"), split=o.get("split")))
             else:
                 lines.append(dict(l))
-        for k in ("type", "op", "no1c", "date", "org", "acc", "cur", "status", "statusRaw", "approved", "bankDone", "bankDate", "stage", "erpType", "docSum", "rate", "fmt"):
+        for k in ("type", "op", "no1c", "date", "org", "acc", "cur", "status", "statusRaw", "approved", "bankDone", "bankDate", "stage", "erpType", "docSum", "rate", "fmt",
+                  "bankName", "accNo"):
             e[k] = n.get(k)
         e.update(lines=lines, excluded=False, loaded=now, fileName=file_name, fileSig=n["sig"], fixed=n.get("fixed") or [])
         apply_rules(C, e)
         closed_doc = in_closed(C, e["date"]) or (prev_move and in_closed(C, prev_move["date"]))
         # ТР-85: существенное изменение уже учтённого документа — до проверки казначеем в расчёте остаётся прежнее движение.
         # ТР-89: в закрытом периоде изменения ERP принимаются сразу (если в настройках не включено удержание).
-        if significant and prev_move and prev_move.get("counted") and (not closed_doc or st.get("holdClosed")):
+        # v1.5.1: отменённый, распроведённый или помеченный на удаление в ERP документ выходит из расчёта сразу, без удержания
+        if significant and would_count(C, e) and prev_move and prev_move.get("counted") and (not closed_doc or st.get("holdClosed")):
             e["held"] = prev_move
             e["review"] = {"t": now, "file": file_name, "diff": significant_diff(C, prev_move, movement_snap(C, e))}
             held_n += 1
@@ -694,6 +790,7 @@ def preview_ref(C, p):
                     item["org"], item["cur"], item["curs"] = o["id"], cs[0]["id"], list(dict.fromkeys(c["id"] for c in cs))
                     if kind == "accounts":
                         item["bank"] = txt(g("bank"))
+                        item["number"] = txt(g("number"))
                         item["accType"] = "Депозитный" if "депоз" in txt(g("accType")).lower() else "Расчётный"
                 if kind == "depts":
                     par = txt(g("parent"))

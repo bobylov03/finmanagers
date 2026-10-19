@@ -812,3 +812,14 @@ table.registry tr:has(+ tr.reg-note) td{border-bottom:0}
 .reg-msg div{margin:0}
 .roles .chk{display:flex;margin:4px 0}
 .fixrow{display:flex;gap:6px;align-items:center;margin-top:3px}
+
+/* Кф / Кп рядом (ТР-37, ТР-75 v1.5.1) */
+table.kfkp th.grp-h{text-align:center;border-bottom:1px solid var(--line)}
+table.kfkp td.kp,table.kfkp th.kp{background:rgba(23,53,43,.035)}
+table.kfkp td.kf+td.kp{border-left:1px dashed var(--line-soft)}
+table.kfkp td.usd{font-weight:600}
+.hero-label b{font-variant-numeric:tabular-nums}
+/* ТР-54: распределение строки между кошельками */
+.split-box{min-width:300px}
+.split-box select{max-width:200px}
+.lnk.sm{font-size:12px}

@@ -3,6 +3,7 @@
 Совпадает с расчётами в интерфейсе (static/js/core.js); сервер — главный: все изменения
 проверяются здесь, интерфейс проверяет то же самое только для удобства.
 """
+from datetime import date, timedelta
 import json
 import math
 
@@ -17,7 +18,7 @@ OP_KINDS = {
     "dividends": {"name": "Дивиденды", "from": "Кошелёк", "to": "Головной кошелёк"},
     # МД-24: вид убран; остаётся только для показа старых операций
     "closeDiv": {"name": "Дивиденды односторонние (устаревший вид)", "from": "Закрываемый кошелёк", "to": "Выбранный кошелёк", "legacy": True},
-    "exchange": {"name": "Обмен между кошельками на двух счетах", "from": "Кошелёк X", "to": "Кошелёк Y"},
+    "exchange": {"name": "Обмен между кошельками на двух счетах", "from": "Кошелёк отправителя", "to": "Кошелёк получателя"},
 }
 DOC_TYPES = {
     "СБДС": {"name": "Списание безналичных ДС", "sign": -1, "cash": False},
@@ -188,7 +189,7 @@ def can_review(C, u, d):
         return True
     src = d.get("held") or d
     ws = [src.get("from", {}).get("wallet"), src.get("to", {}).get("wallet")] if d.get("type") == "ПЕР" else [l.get("wallet") for l in (src.get("lines") or [])]
-    ws += [l.get("wallet") for l in (d.get("lines") or [])]
+    ws += [p["wallet"] for l in (d.get("lines") or []) for p in line_parts(l)]
     if any(w and can_edit_wallet(C, u, w) for w in ws):
         return True
     return has(u, "finControl") and any(not w for w in ws)
@@ -206,6 +207,19 @@ def line_visible(C, u, wid):
     if is_admin(u):
         return True
     return (wid in visible_wallets(C, u)) if wid else sees_no_wallet(u)
+
+
+def line_parts(l):
+    """ТР-54: строка расшифровки может быть распределена между несколькими кошельками (split) — сумма строки ERP не меняется."""
+    sp = l.get("split") or []
+    if sp:
+        tot = l.get("sum") or 0
+        return [{"sum": p["sum"], "wallet": p.get("wallet") or None, "usd": (l.get("usd") or 0) * p["sum"] / tot if tot else 0} for p in sp]
+    return [{"sum": l.get("sum") or 0, "wallet": l.get("wallet") or None, "usd": l.get("usd")}]
+
+
+def line_visible_l(C, u, l):
+    return any(line_visible(C, u, p["wallet"]) for p in line_parts(l))
 
 
 # ---------------- период (ТР-55) ----------------
@@ -279,8 +293,10 @@ def line_ctx(doc, l):
 def apply_rules(C, doc, force=False):
     n = 0
     for l in doc.get("lines") or []:
-        if l.get("wallet") and l.get("wsrc") != "rule" and not force:
+        if (l.get("wallet") or l.get("split")) and l.get("wsrc") != "rule" and not force:
             continue
+        if l.get("split"):
+            continue   # строка, распределённая вручную между кошельками, правилами не перезаписывается
         r = match_rule(C, line_ctx(doc, l), doc["date"])
         if r:
             if l.get("wallet") != r["wallet"]:
@@ -292,7 +308,7 @@ def apply_rules(C, doc, force=False):
 
 
 # ---------------- состояния документа (ТР-107) и расчёт фактов ----------------
-STATE_NAMES = {"deleted": "Помечен на удаление", "excluded": "Исключён", "notposted": "Не проведён", "posted": "Проведён"}
+STATE_NAMES = {"deleted": "Помечен на удаление", "notposted": "Не проведён", "posted": "Проведён"}   # ТР-14 v1.5.1: статуса «Исключён» нет
 
 
 def doc_state(C, d):
@@ -303,7 +319,7 @@ def doc_state(C, d):
     if d.get("source") == "manual" and st.get("switchDate") and d["date"] >= st["switchDate"]:
         return "deleted"    # ТР-72: ручной документ заменён документами 1С; «Исключён» — только отсутствие в файле (ТР-107)
     if d.get("excluded"):
-        return "excluded"
+        return "notposted"   # нет в последней загрузке своего периода (ТР-62) — вне расчёта, история сохраняется
     if d.get("status") != "Проведён" or (d.get("type") == "СБДС" and d.get("approved") is False):
         return "notposted"
     return "posted"
@@ -322,7 +338,7 @@ def movement_snap(C, d):
     """Движение документа, которое сохраняется в расчёте до проверки казначеем (ТР-85)."""
     snap = {"counted": doc_counts(C, d), "date": d["date"], "org": d.get("org"), "acc": d.get("acc"), "cur": d.get("cur"), "status": d.get("status"),
             "approved": d.get("approved"), "lines": [{"sum": l.get("sum"), "usd": l.get("usd"), "wallet": l.get("wallet"), "cf": l.get("cf"),
-                                                      "dept": l.get("dept"), "zone": l.get("zone"), "cpty": l.get("cpty")} for l in d.get("lines") or []]}
+                                                      "dept": l.get("dept"), "zone": l.get("zone"), "cpty": l.get("cpty"), "split": l.get("split")} for l in d.get("lines") or []]}
     if d.get("type") == "ПЕР":
         snap["from"], snap["to"] = dict(d.get("from") or {}), dict(d.get("to") or {})
     return snap
@@ -368,9 +384,31 @@ def op_counts(C, o):
     return bool(o.get("posted") and not o.get("deleted") and not o.get("linkedDoc") and op_complete(C, o) and not (sd and o["date"] < sd))
 
 
+FAR = "9999-12-31"   # «дата» в фактическом остатке для СБДС, ещё не исполненного банком
+
+
+def sent_confirmations(C):
+    """Писх: дата, с которой СБДС подтверждён казначеем как отправленный (ТР-07, Daily Balance v3.1).
+    Отчёт за утро D подтверждает отправку на конец D−1."""
+    def build():
+        m = {}
+        for r in C.S.get("dbReports") or []:
+            eff = (date.fromisoformat(r["date"]) - timedelta(days=1)).isoformat()
+            for row in r.get("rows") or []:
+                for did in row.get("pDocs") or []:
+                    if did not in m or eff < m[did]:
+                        m[did] = eff
+        return m
+    return C.cache("sentConf", build)
+
+
 def facts(C):
+    """Движения денег. date — дата в фактическом расчётном остатке (Кф): для СБДС это дата исполнения банком,
+    неисполненный СБДС в Кф не входит (date = FAR). kp — дата в плановом остатке (Кп = Кф − Писх):
+    неисполненный СБДС входит в Кп с момента подтверждения казначеем. docDate — дата документа (ТР-07, ТР-09)."""
     def build():
         out = []
+        confs = sent_confirmations(C)
         d0 = C.S["settings"].get("startDate")
         if d0:
             for x in C.S["opening"]:
@@ -390,9 +428,16 @@ def facts(C):
                         out.append({"date": d["date"], "acc": S_["acc"], "cur": S_.get("cur") or a["cur"], "wallet": S_.get("wallet") or None, "sum": sg * (S_.get("sum") or 0), "cat": "transfer", "doc": d["id"]})
                 continue
             sg = DOC_TYPES[d["type"]]["sign"]
+            dd, kp = d["date"], d["date"]
+            if d["type"] == "СБДС":
+                bank = d0_.get("bankDate") or ""
+                dd = max(bank, d["date"]) if bank else FAR
+                c_ = confs.get(d0_["id"])
+                kp = min(dd, max(d["date"], c_)) if c_ else dd
             for l in d["lines"]:
-                out.append({"date": d["date"], "acc": d["acc"], "cur": d["cur"], "wallet": l.get("wallet") or None, "sum": sg * (l.get("sum") or 0),
-                            "cat": "in" if sg > 0 else "out", "doc": d["id"]})
+                for p_ in line_parts(l):
+                    out.append({"date": dd, "kp": kp, "docDate": d["date"], "acc": d["acc"], "cur": d["cur"], "wallet": p_["wallet"],
+                                "sum": sg * p_["sum"], "cat": "in" if sg > 0 else "out", "doc": d["id"], "sbds": d["type"] == "СБДС"})
         for o in C.S["ops"]:
             if not op_counts(C, o):
                 continue
@@ -422,10 +467,11 @@ def pos_facts(C):
     return C.cache("posFacts", build)
 
 
-def balances(C, d, flist):
+def balances(C, d, flist, kind="kf"):
+    """Остатки кошелёк × счёт × валюта на дату: kind «kf» — фактический расчётный (Кф), «kp» — плановый (Кп = Кф − Писх)."""
     m = {}
     for f in flist:
-        if f["date"] > d:
+        if (f.get("kp", f["date"]) if kind == "kp" else f["date"]) > d:
             continue
         k = (f["wallet"], f["acc"], f["cur"])
         m[k] = m.get(k, 0) + f["sum"]
@@ -490,11 +536,13 @@ def needs_formalizing(C):
 def notifications(C, u, d=None):
     d = d or today_iso()
     out, A = [], is_admin(u)
-    for (w, aid, cur), s in C.cache(("bal", d), lambda: balances(C, d, facts(C))).items():
-        if not w or s >= -0.005:
-            continue
-        if A or u["id"] in treasurers_of(C, w):
-            out.append({"lvl": "err", "text": f"Отрицательный остаток: {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}", "tr": "ТР-24", "go": "rep37"})
+    # ТР-24: отрицательные Кф и Кп контролируются отдельно, в уведомлении — вид остатка
+    for kind, label in (("kf", "Кф"), ("kp", "Кп")):
+        for (w, aid, cur), s in C.cache(("bal", d, kind), lambda: balances(C, d, facts(C), kind)).items():
+            if not w or s >= -0.005:
+                continue
+            if A or u["id"] in treasurers_of(C, w):
+                out.append({"lvl": "err", "text": f"Отрицательный остаток ({label}): {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}", "tr": "ТР-24", "go": "rep37"})
     af = acc_facts(C)
     for r in (recon(C) if C.S["settings"].get("recon1c") else []):
         if abs(r["diff"]) < 0.005:
@@ -552,9 +600,9 @@ def doc_snap(C, d):
     if d["type"] == "ПЕР":
         return {"дата": d["date"], "сумма": f"{fmt_in(d['from'].get('sum'))} → {fmt_in(d['to'].get('sum'))}",
                 "кошелёк": f"{wn(d['from'].get('wallet'))} → {wn(d['to'].get('wallet'))}", "статус": "помечен" if d.get("deleted") else d["status"]}
-    st = "исключён" if d.get("excluded") else "помечен на удаление" if d.get("deleted") else d["status"] + (", не согласован" if d["type"] == "СБДС" and d.get("approved") is False else "")
+    st = "нет в загрузке" if d.get("excluded") else "помечен на удаление" if d.get("deleted") else d["status"] + (", не согласован" if d["type"] == "СБДС" and d.get("approved") is False else "")
     return {"дата": d["date"], "сумма": fmt_in(r2(sum(l.get("sum") or 0 for l in d["lines"]))),
-            "кошелёк": ", ".join(dict.fromkeys(wn(l.get("wallet")) for l in d["lines"])), "статус": st}
+            "кошелёк": ", ".join(dict.fromkeys(wn(p["wallet"]) + (f" {fmt(p['sum'])}" if l.get("split") else "") for l in d["lines"] for p in line_parts(l))), "статус": st}
 
 
 def op_snap(C, o):

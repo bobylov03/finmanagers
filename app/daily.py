@@ -1,9 +1,11 @@
-"""Daily Balance — ежедневная сверка банковских и расчётных остатков (раздел 7, ТР-91…ТР-105).
+"""Daily Balance — ежедневная сверка банковских и расчётных остатков (раздел 7, ТР-91…ТР-105; v3.1).
+v3.1: Кф — фактический расчётный остаток кошельков (СБДС — только исполненные банком), Писх — подтверждённые казначеем
+исходящие в пути, Кп = Кф − Писх. Главная сверка: Расхождение = Б − Кф.
 
 Обозначения: D — рабочий день, за утро которого сдаётся отчёт; Б — остаток по банку на утро D (вводит казначей);
 П — исходящие в пути: учтённые СБДС с датой ≤ D−1 без даты проведения банком или с датой ≥ D (программа предзаполняет,
-казначей подтверждает); К — сумма остатков всех кошельков по позиции на конец D−1, включая «Без кошелька».
-Расхождение = (Б − П) − К. Разные валюты никогда не суммируются; USD в сверке не участвует (ТР-58).
+казначей подтверждает) = Писх; К = Кф — сумма фактических остатков всех кошельков по позиции на конец D−1, включая «Без кошелька».
+Расхождение = Б − Кф; Кп = Кф − Писх. Разные валюты никогда не суммируются; USD в сверке не участвует (ТР-58).
 """
 from datetime import date, datetime, timedelta, timezone
 
@@ -106,7 +108,7 @@ def wallet_label_map(C, u):
 
 # ---------------- расчёт К и П ----------------
 def k_on(C, pos, d):
-    """К: остатки кошельков по позиции на конец D−1 (все кошельки и «Без кошелька»)."""
+    """Кф: фактические остатки кошельков по позиции на конец D−1 (все кошельки и «Без кошелька»; СБДС — исполненные банком)."""
     lim = (date.fromisoformat(d) - timedelta(days=1)).isoformat()
     by = {}
     for f in pos_facts(C).get((pos["acc"], pos["cur"]), []):
@@ -272,8 +274,10 @@ def recon_row(C, u, pos, d, state="submit"):
     if row.get("noAccess"):
         out["status"] = "noaccess"
         return out
-    diff = r2((b - p) - k)
+    # Daily Balance v3.1: главная сверка Б − Кф; Писх проверяется отдельно, Кп = Кф − Писх
+    diff = r2(b - k)
     out["diff"] = diff
+    out["kp"] = r2(k - (p or 0))
     # проверка 2: П казначея против списка неисполненных СБДС программы
     # «на момент сдачи» — список программы, сохранённый при сдаче (ТР-96, ТР-102); «сейчас» — пересчитанный
     prog = row["pCand"] if state != "now" and row.get("pCand") is not None else p_candidates(C, pos, d)
@@ -307,7 +311,7 @@ def hints(C, pos, d, diff):
             tot = r2(sum(l.get("sum") or 0 for l in doc.get("lines") or []))
             if abs(tot - abs(diff)) < 0.005:
                 seen.add(doc["id"]); same.append({"doc": doc["id"], "no": doc.get("no1c") or doc.get("no"), "date": doc["date"], "sum": tot, "notCounted": True})
-    docs_dates = [f["date"] for f in fl if f.get("doc") or f.get("op")]
+    docs_dates = [f.get("docDate", f["date"]) for f in fl if f.get("doc") or f.get("op")]
     no_w = sum(1 for f in fl if not f["wallet"] and f.get("doc"))
     review = [{"doc": x["id"], "no": x.get("no1c") or x.get("no")} for x in C.S["docs"] if x.get("review") and x.get("acc") == pos["acc"] and (x.get("cur") or "") == pos["cur"]]
     return {"same": same[:10], "lastDoc": max(docs_dates) if docs_dates else None, "noWallet": no_w, "review": review}
@@ -386,9 +390,10 @@ def build_row(C, u, pos, d, data):
         row["diff"] = None
     else:
         row["b"] = r2(float(data["b"]))
-        row["diff"] = r2((row["b"] - p) - k)
+        row["diff"] = r2(row["b"] - k)          # v3.1: Расхождение = Б − Кф
+    row["kp"] = r2(k - p)                       # Кп = Кф − Писх
     row["bp"] = r2(row["b"] - p) if row["b"] is not None else None
-    row["usd"] = r2(row["bp"] / rate) if rate and row["bp"] is not None else None
+    row["usd"] = r2(row["b"] / rate) if rate and row["b"] is not None else None   # USD остатка банка
     return row
 
 

@@ -15,7 +15,7 @@ from . import actions as A
 from . import daily as DB_
 from . import importer as I
 from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
-                    own_wallets, recon, reconciled_days, sees_no_wallet, visible_wallets, auto_close_period)
+                    own_wallets, recon, reconciled_days, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
 from .mailer import mail_configured, send_notifications
 from .store import Store
 from .util import now_iso, today_iso
@@ -209,9 +209,9 @@ def create_app(db_path=None, start_scheduler=True):
                     if any((w in V) if w else nw for w in ws):
                         docs.append(dict(d, hiddenLines=0)); refd.update(w for w in ws if w)
                     continue
-                vis = [dict(l, idx=i) for i, l in enumerate(d["lines"]) if line_visible(c, u, l.get("wallet"))]
+                vis = [dict(l, idx=i) for i, l in enumerate(d["lines"]) if line_visible_l(c, u, l)]
                 held = d.get("held")
-                hvis = [l for l in (held or {}).get("lines") or [] if line_visible(c, u, l.get("wallet"))]
+                hvis = [l for l in (held or {}).get("lines") or [] if line_visible_l(c, u, l)]
                 if not vis and not hvis:
                     continue
                 hidden = len(d["lines"]) - len(vis)
@@ -228,6 +228,9 @@ def create_app(db_path=None, start_scheduler=True):
             contracts = [x for x in S["contracts"] if x["lender"] in V or x["borrower"] in V]
             for x in contracts:
                 refd.update((x["lender"], x["borrower"]))
+        confs = sent_confirmations(c)   # Писх: подтверждённые казначеем исходящие в пути
+        if confs:
+            docs = [dict(x, sentConf=confs[x["id"]]) if x["id"] in confs else x for x in docs]
         out.update(docs=docs, ops=ops, opening=opening, contracts=contracts)
         # кошельки: администратор — все; остальные — свои, у казначея ещё названия активных нескрытых (раздел 8), чужие скрытые — замаскированы
         if adm:

@@ -4,7 +4,7 @@
    ============================================================ */
 let VIEW = "dash";
 let MODAL = null;
-const REPORT_VIEWS = {rep37:"Деньги по кошелькам на дату", rep75:"Где лежат деньги", rep38:"Фактический ДДС с остатками", rep40:"Внутренние займы", recon:"Сверка с 1С", hist:"История согласования", dbmorning:"Daily Balance: остатки на утро", dbrecon:"Daily Balance: сверка"};
+const REPORT_VIEWS = {rep37:"Деньги по кошелькам на дату", rep75:"Расположение ДС", rep38:"Фактический ДДС с остатками", rep40:"Внутренние займы", recon:"Сверка с 1С", hist:"Операции", dbmorning:"Daily Balance: остатки на утро", dbrecon:"Daily Balance: сверка"};
 
 function menu(){
   const u = me(); const A = isAdmin(u);
@@ -21,8 +21,8 @@ function menu(){
   const M = [
     ["Обзор", [["dash","Сводка"]]],
     ...(dbItems.length ? [["Daily Balance", dbItems]] : []),
-    ["Отчёты", [["rep37","Деньги по кошелькам"],["rep75","Где лежат деньги"],["rep38","Фактический ДДС"],["rep40","Внутренние займы"],["hist","История согласования"], ...(DB.settings.recon1c||A ? [["recon","Сверка с 1С", DB.settings.recon1c ? (recon().filter(r=>Math.abs(r.diff)>=0.005).length||"") : ""]] : [])]],
-    ["Операции", [
+    ["Отчёты", [["rep37","Деньги по кошелькам"],["rep75","Расположение ДС"],["rep38","Фактический ДДС"],["rep40","Внутренние займы"],["hist","Операции"], ...(DB.settings.recon1c||A ? [["recon","Сверка с 1С", DB.settings.recon1c ? (recon().filter(r=>Math.abs(r.diff)>=0.005).length||"") : ""]] : [])]],
+    ["Учёт", [
       ["docs","Документы", rv||""],
       ["ops","Внутренние операции"],
       ...(seesNoWallet(u) ? [["nowallet","Без кошелька", noW||""]] : []),
@@ -229,12 +229,12 @@ function optsWallets(val, date, {onlyEditable=false, empty="— без коше�
   }).join("");
   return html;
 }
-function optsAccounts(orgId, val, {cash=null, curId=null, empty="— выберите —"}={}){
+function optsAccounts(orgId, val, {cash=null, curId=null, notCur=null, empty="— выберите —"}={}){
   let list = [];
   if(cash!==true) list.push(...DB.accounts.map(a=>Object.assign({kind:"Счёт"},a)));
   if(cash!==false) list.push(...DB.cashboxes.map(a=>Object.assign({kind:"Касса"},a)));
-  list = list.filter(a=>a.org===orgId && (!curId || accCurs(a).includes(curId)) && (isActiveAt(a,CUR.date) || a.id===val));
-  return `<option value="">${esc(orgId?empty:"— сначала организация —")}</option>` + list.map(a=>`<option value="${a.id}" ${a.id===val?"selected":""}>${esc(a.name)} · ${esc(accCurs(a).map(curCode).join("/"))}${a.accType==="Депозитный"?" · депозит":""}</option>`).join("");
+  list = list.filter(a=>a.org===orgId && (!curId || accCurs(a).includes(curId)) && (!notCur || accCurs(a).some(c=>c!==notCur)) && (isActiveAt(a,CUR.date) || a.id===val));
+  return `<option value="">${esc(orgId?empty:"— сначала организация —")}</option>` + list.map(a=>`<option value="${a.id}" ${a.id===val?"selected":""}>${esc(a.name)} · ${esc(accCurs(a).filter(c=>(!curId||c===curId)&&c!==notCur).map(curCode).join("/"))}${a.accType==="Депозитный"?" · депозит":""}</option>`).join("");
 }
 
 /* --- ввод сумм с разделением разрядов (МД-10) --- */
@@ -253,10 +253,16 @@ function moneyIn(el, dec){
   let c=0, p=0; while(p<out.length && c<left){ if(sig(out[p])) c++; p++; }
   try{ el.setSelectionRange(p,p); }catch(e){}
 }
+/* Значение фиксируется по уходу с поля (blur), а не по событию change: некоторые браузеры (Firefox, Яндекс)
+   не присылают change, если во время ввода поле переформатировалось кодом (разделение разрядов) */
 function moneyInput({id, value, onchange, dec=2, placeholder="0,00", readonly=false, style=""}){
-  return `<input type="text" inputmode="decimal" class="money" ${id?`id="${id}"`:""} value="${esc(fmtIn(value,dec))}" placeholder="${placeholder}" style="${style}"
-    ${readonly?"readonly":`oninput="moneyIn(this,${dec})" onchange="${onchange}"`}>`;
+  const v = esc(fmtIn(value,dec));
+  return `<input type="text" inputmode="decimal" class="money" ${id?`id="${id}"`:""} value="${v}" data-v="${v}" placeholder="${placeholder}" style="${style}"
+    ${readonly?"readonly":`oninput="moneyIn(this,${dec})" onkeydown="if(event.key==='Enter'&&!event.ctrlKey&&!event.metaKey)this.blur()" onblur="if(this.value!==this.dataset.v){this.dataset.v=this.value;${onchange}}"`}>`;
 }
+// нажатие кнопки, пока курсор в поле суммы: сначала фиксируем сумму, потом выполняем действие (клик не теряется из-за перерисовки)
+document.addEventListener("mousedown", e=>{ const a = document.activeElement; if(a && a.classList && a.classList.contains("money") && e.target.closest("button,.btn")) e.preventDefault(); }, true);
+document.addEventListener("click", e=>{ const a = document.activeElement; if(a && a.classList && a.classList.contains("money") && e.target.closest("button,.btn")) a.blur(); }, true);
 /** Сумма + валюта рядом, валюта из счёта и не редактируется (МД-09) */
 function sumWithCur(inputHtml, curId){ return `<span class="sumcell">${inputHtml}<span class="cur" title="Валюта счёта — не редактируется">${esc(curId?curCode(curId):"—")}</span></span>`; }
 const amt = (n, curId, {signed=false, dec=2}={}) => `<span class="num ${n<0?"neg":""}">${signed?fmtS(n,dec):fmt(n,dec)}</span>${curId?` <span class="muted">${esc(curCode(curId))}</span>`:""}`;

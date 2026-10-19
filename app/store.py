@@ -101,7 +101,7 @@ TABLES = {
     "rates": ("rates", ("cur", "date"), [("cur", "cur", "s"), ("date", "date", "s"), ("rate", "rate", "f")]),
     "orgs": ("orgs", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("deactivated", "deactivated", "s")]),
     "accounts": ("accounts", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("org", "org", "s"), ("cur", "cur", "s"), ("bank", "bank", "s"),
-                                      ("acc_type", "accType", "s"), ("deactivated", "deactivated", "s"), ("curs", "curs", "j")]),
+                                      ("acc_type", "accType", "s"), ("deactivated", "deactivated", "s"), ("curs", "curs", "j"), ("number", "number", "s")]),
     "cashboxes": ("cashboxes", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("org", "org", "s"), ("cur", "cur", "s"), ("deactivated", "deactivated", "s"),
                                         ("curs", "curs", "j")]),
     "cfTypes": ("cf_types", ("id",), [("id", "id", "s"), ("name", "name", "s"), ("deactivated", "deactivated", "s")]),
@@ -141,10 +141,11 @@ DOC_COLS = [("id", "id", "s"), ("no", "no", "s"), ("source", "source", "s"), ("g
             ("status_raw", "statusRaw", "s"), ("approved", "approved", "b"), ("bank_done", "bankDone", "b"), ("bank_date", "bankDate", "s"),
             ("excluded", "excluded", "b"), ("deleted", "deleted", "b"), ("author", "author", "s"), ("created", "created", "s"), ("loaded", "loaded", "s"),
             ("file_name", "fileName", "s"), ("file_sig", "fileSig", "s"), ("erp_type", "erpType", "s"), ("stage", "stage", "s"), ("rate", "rate", "f"),
-            ("doc_sum", "docSum", "f"), ("fixed", "fixed", "j"), ("held", "held", "j"), ("review", "review", "j"), ("fmt", "fmt", "s")]
+            ("doc_sum", "docSum", "f"), ("fixed", "fixed", "j"), ("held", "held", "j"), ("review", "review", "j"), ("fmt", "fmt", "s"),
+            ("bank_name", "bankName", "s"), ("acc_no", "accNo", "s"), ("usd_erp", "usdErp", "f")]
 LINE_COLS = [("sum", "sum", "f"), ("usd", "usd", "f"), ("wallet", "wallet", "s"), ("wsrc", "wsrc", "s"), ("rule", "rule", "s"), ("file_wallet", "fileWallet", "s"),
              ("dept", "dept", "s"), ("cf", "cf", "s"), ("zone", "zone", "s"), ("cpty", "cpty", "s"), ("contract", "contract", "s"), ("purpose", "purpose", "s"),
-             ("fixed", "fixed", "j")]
+             ("fixed", "fixed", "j"), ("split", "split", "j")]
 
 DEFAULT_SETTINGS = {
     "startDate": "", "closedTo": "", "switchDate": "", "autoClose": True,
@@ -202,7 +203,9 @@ class Store:
     ADD_COLS = [("accounts", "curs", "TEXT"), ("cashboxes", "curs", "TEXT"), ("users", "can_upload", "INTEGER"),
                 ("docs", "erp_type", "TEXT"), ("docs", "stage", "TEXT"), ("docs", "rate", "REAL"), ("docs", "doc_sum", "REAL"),
                 ("docs", "fixed", "TEXT"), ("docs", "held", "TEXT"), ("docs", "review", "TEXT"), ("docs", "fmt", "TEXT"),
-                ("doc_lines", "fixed", "TEXT"), ("opening", "cur", "TEXT"), ("ops", "xrate", "REAL")]
+                ("doc_lines", "fixed", "TEXT"), ("opening", "cur", "TEXT"), ("ops", "xrate", "REAL"),
+                ("docs", "bank_name", "TEXT"), ("docs", "acc_no", "TEXT"), ("docs", "usd_erp", "REAL"), ("accounts", "number", "TEXT"),
+                ("doc_lines", "split", "TEXT")]
 
     def _cols(self, table):
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}

@@ -1,8 +1,9 @@
 "use strict";
 /* ============================================================
    23. DAILY BALANCE (раздел 7, ТР-91…ТР-105)
-   Б — остаток по банку на утро D; П — исходящие в пути; К — сумма кошельков по позиции на конец D−1.
-   Расхождение = (Б − П) − К. Валюты не суммируются; USD в сверке не участвует (ТР-58).
+   v3.1: Б — остаток по банку на утро D; Кф — фактический расчётный остаток кошельков по позиции на конец D−1
+   (СБДС — только исполненные банком); Писх — исходящие в пути, подтверждённые казначеем; Кп = Кф − Писх.
+   Расхождение = Б − Кф. Валюты не суммируются; USD в сверке не участвует (ТР-58).
    Все данные приходят с сервера уже отфильтрованными по правам (ТР-104).
    ============================================================ */
 const DBV = {date:"", my:null, morning:null, cmpView:null, recon:null, loading:{}, ver:{},
@@ -56,8 +57,8 @@ function dbRowData(pid){
 function dbCalc(row, r){
   const p = r2(row.pCand.filter(x=>r.pDocs.includes(x.doc)).reduce((t,x)=>t+x.sum,0) + (r.pManual||[]).reduce((t,m)=>t+(isFinite(m.sum)?m.sum:0),0));
   const b = r.noAccess ? (row.prev ? row.prev.b : null) : r.b;
-  const bp = b===null || b===undefined ? null : r2(b-p);
-  return {p, b, bp, usd: bp!==null && row.rate ? r2(bp/row.rate) : null, diff: !r.noAccess && bp!==null ? r2(bp-row.k) : null};
+  const has = !(b===null || b===undefined);
+  return {p, b, kp: r2(row.k - p), usd: has && row.rate ? r2(b/row.rate) : null, diff: !r.noAccess && has ? r2(b-row.k) : null};
 }
 function dbEdit(pid, f, v){
   const r = dbRowData(pid);
@@ -84,7 +85,7 @@ function viewDbMy(){
   if(!sub && DBV.savedAt==="" && v.draftSaved) DBV.savedAt = v.draftSaved;
   const [stN, stC] = DB_STATUS[v.status];
   const head = `<h1>${T} <span class="tzref">ТР-92…97</span></h1>
-  <p class="lede">Каждое рабочее утро введите фактический остаток по банку (Б) по каждой своей позиции — счёт × валюта — и подтвердите исходящие в пути (П): программа предзаполнила список проведённых СБДС, которые банк ещё не исполнил. Расхождение = (Б − П) − К, где К — сумма кошельков по позиции на конец предыдущего дня. Сдать до ${esc(DB.settings.dbTime||"10:30")} МСК; позже — можно, опоздание фиксируется. Сданный отчёт не меняется: днём можно добавить обновление остатка.</p>
+  <p class="lede">Каждое рабочее утро введите фактический остаток по банку (Б) по каждой своей позиции — счёт × валюта. Программа сравнит его с фактическим расчётным остатком кошельков (Кф) — суммой всех кошельков на конец предыдущего дня по операциям, исполненным банком: Расхождение = Б − Кф. Отдельно подтвердите исходящие в пути (Писх): программа предзаполнила список проведённых СБДС, которые банк ещё не списал; подтверждённые уменьшают плановый остаток Кп = Кф − Писх. Сдать до ${esc(DB.settings.dbTime||"10:30")} МСК; позже — можно, опоздание фиксируется. Сданный отчёт не меняется: днём можно добавить обновление остатка.</p>
   ${dbDateBar(`<div class="fld"><span>Статус</span><span class="tag ${stC} big">${stN}${sub?` · ${fmtT(rep.t)}${rep.late?" · с опозданием":""}`:""}</span></div>
     <div class="fld"><span>Срок</span><b>${fmtD(v.date)} ${hm(v.deadline)} МСК</b></div>`)}`;
   if(!v.workday) return head + `<div class="alert info">${fmtD(v.date)} — нерабочий день по календарю Daily Balance. Отчёт сдаётся только в рабочие дни (ТР-94).</div>`;
@@ -115,24 +116,25 @@ function dbMyCard(row, r){
       <label class="fld"><span>Комментарий</span><input type="text" value="${esc(r.comment||"")}" onchange="dbEdit('${pid}','comment',this.value)"></label>
     </div>
     <div class="stack">
-      <div class="fld"><span>П — исходящие в пути: проведённые СБДС с датой до ${fmtD(addDays(DBV.my.date,-1))} включительно, банк ещё не исполнил</span>
+      <div class="fld"><span>Писх — исходящие в пути, отправленные, но не списанные банком: проведённые СБДС с датой до ${fmtD(addDays(DBV.my.date,-1))} включительно, банк ещё не исполнил</span>
         ${row.pCand.length?`<table class="mini"><thead><tr><th></th><th>Документ</th><th>Дата</th><th>Получатель</th><th class="num">Сумма</th></tr></thead><tbody>
-          ${row.pCand.map(x=>`<tr><td><input type="checkbox" ${r.pDocs.includes(x.doc)?"checked":""} onchange="dbEdit('${pid}','pDoc',{doc:'${x.doc}',on:this.checked})" aria-label="Учесть в П"></td>
+          ${row.pCand.map(x=>`<tr><td><input type="checkbox" ${r.pDocs.includes(x.doc)?"checked":""} onchange="dbEdit('${pid}','pDoc',{doc:'${x.doc}',on:this.checked})" aria-label="Учесть в Писх"></td>
             <td><a class="lnk" onclick="dbOpen('doc','${x.doc}')">${esc(x.no||"")}</a></td><td>${fmtD(x.date)}</td><td>${esc(x.cpty||"")}</td><td class="num">${fmt(x.sum)}</td></tr>`).join("")}</tbody></table>`
           :`<span class="muted">Программа не нашла неисполненных СБДС по позиции.</span>`}</div>
-      <div class="fld"><span>Ручные суммы П (с комментарием)</span>
+      <div class="fld"><span>Ручные суммы Писх (с комментарием)</span>
         ${(r.pManual||[]).map((m,i)=>`<div class="row" style="gap:6px;margin-bottom:4px">${moneyInput({value:m.sum, onchange:`dbManual('${pid}',${i},'sum',parseNum(this.value))`, style:"width:140px"})}
           <input type="text" placeholder="комментарий обязателен" value="${esc(m.comment||"")}" onchange="dbManual('${pid}',${i},'comment',this.value)" style="flex:1">
           <button class="btn sm ghost" onclick="dbManual('${pid}',${i},null)" aria-label="Удалить">✕</button></div>`).join("")}
-        <button class="btn sm" onclick="dbManual('${pid}',-1)">Добавить сумму</button></div>
+        <button class="btn sm" onclick="dbManual('${pid}',-1)">Добавить сумму</button>
+        <small>Отметьте только те платежи, которые фактически отправлены, но ещё не списаны банком на момент остатка Б.</small></div>
     </div>
     <div class="db-calc">
-      <div><span>П</span><b>${fmt(c.p)}</b></div>
-      <div><span>Б − П</span><b>${c.bp===null?"—":fmt(c.bp)}</b></div>
+      <div><span>Кф — кошельки на конец ${fmtD(addDays(DBV.my.date,-1))}</span><b><a class="lnk" onclick="dbShowK('${row.acc}','${row.cur}','${DBV.my.date}')">${fmt(row.k)}</a></b></div>
+      <div class="${c.diff===null?"":Math.abs(c.diff)<0.005?"ok":"bad"}"><span>Расхождение Б − Кф</span><b>${c.diff===null?"—":fmtS(c.diff)}</b></div>
+      <div><span>Писх — подтверждено в пути</span><b>${fmt(c.p)}</b></div>
+      <div><span>Кп = Кф − Писх</span><b>${fmt(c.kp)}</b></div>
       <div><span>Курс к USD</span><b>${row.rate?fmtRate(row.rate):"нет курса"}</b></div>
-      <div><span>Сумма USD</span><b>${c.usd===null?"—":fmt(c.usd)}</b></div>
-      <div><span>К — кошельки на конец ${fmtD(addDays(DBV.my.date,-1))}</span><b><a class="lnk" onclick="dbShowK('${row.acc}','${row.cur}','${DBV.my.date}')">${fmt(row.k)}</a></b></div>
-      <div class="${c.diff===null?"":Math.abs(c.diff)<0.005?"ok":"bad"}"><span>Расхождение (Б − П) − К</span><b>${c.diff===null?"—":fmtS(c.diff)}</b></div>
+      <div><span>Б в USD</span><b>${c.usd===null?"—":fmt(c.usd)}</b></div>
       ${row.kSplit.length?`<div class="ksplit">${row.kSplit.map(k=>`<div><span>${esc(k.name)}</span><span class="num">${fmt(k.sum)}</span></div>`).join("")}</div>`:""}
     </div>
   </div></div></div>`;
@@ -141,7 +143,7 @@ async function dbSubmit(){
   const v = DBV.my; const neg = v.rows.filter(row=>{ const r = dbRowData(row.pos); return !r.noAccess && r.b<0; });
   if(neg.length && !confirm(`Отрицательный остаток по банку: ${neg.map(x=>dbPosLabel(x)).join(", ")}. Проверьте ввод. Сдать отчёт как есть?`)) return;
   const noCm = v.rows.some(row=>(dbRowData(row.pos).pManual||[]).some(m=>isFinite(m.sum) && m.sum!==null && !(m.comment||"").trim()));
-  if(noCm){ toast("У ручной суммы П укажите комментарий", {lvl:"err"}); return; }
+  if(noCm){ toast("У ручной суммы Писх укажите комментарий", {lvl:"err"}); return; }
   if(!confirm(`Сдать отчёт за ${fmtD(v.date)}? Сданный отчёт фиксируется и не меняется.`)) return;
   clearTimeout(DBV.saveT);
   const data = {}; v.rows.forEach(row=>{ const r = dbRowData(row.pos); data[row.pos] = Object.assign({}, r, {pDocs:r.pDocs}); });
@@ -153,12 +155,12 @@ async function dbSubmit(){
 function dbSubmitted(v){
   const rep = v.report;
   return `<div class="panel"><header><h2>Сданный отчёт · ${fmtT(rep.t)}${rep.late?` <span class="tag off">с опозданием</span>`:""}</h2><span class="muted">${esc(rep.uname)}</span><div style="flex:1"></div>${exportBtn("tDbMy","Daily Balance мой отчёт")}</header>
-  <div class="body flush"><div class="tbl-wrap"><table id="tDbMy"><thead><tr><th>Организация</th><th>Счёт</th><th>Вал.</th><th class="num">Б</th><th class="num">П</th><th class="num">Б − П</th><th class="num">Курс</th><th class="num">USD</th><th class="num">К</th><th class="num">Расхождение</th><th>Входящие в пути</th><th>Комментарий</th><th>Обновления днём</th><th></th></tr></thead>
+  <div class="body flush"><div class="tbl-wrap"><table id="tDbMy"><thead><tr><th>Организация</th><th>Счёт</th><th>Вал.</th><th class="num">Б</th><th class="num">Кф</th><th class="num">Расхождение Б − Кф</th><th class="num">Писх</th><th class="num">Кп</th><th class="num">Курс</th><th class="num">Б, USD</th><th>Входящие в пути</th><th>Комментарий</th><th>Обновления днём</th><th></th></tr></thead>
   <tbody>${rep.rows.map(x=>{ const row = v.rows.find(y=>y.pos===x.pos)||{updates:[]};
     return `<tr><td>${esc(nm(org(x.org)))}</td><td>${esc(nm(acc(x.acc)))}</td><td>${esc(curCode(x.cur))}</td>
-    <td class="num">${x.noAccess?`<span class="tag warn" title="Последний остаток${x.last?` на ${fmtD(x.last.date)}`:""}">нет доступа</span> ${x.b!=null?fmt(x.b):""}`:fmt(x.b)}</td><td class="num">${fmt(x.p)}</td><td class="num">${x.bp!=null?fmt(x.bp):"—"}</td>
-    <td class="num">${x.rate?fmtRate(x.rate):"—"}</td><td class="num">${x.usd!=null?fmt(x.usd):"—"}</td><td class="num">${fmt(x.k)}</td>
-    <td class="num ${x.diff&&Math.abs(x.diff)>=0.005?"neg":""}">${x.diff==null?"—":fmtS(x.diff)}</td><td>${x.incoming!=null?`${fmt(x.incoming)} ${esc(x.incomingComment||"")}`:""}</td><td>${esc(x.comment||"")}</td>
+    <td class="num">${x.noAccess?`<span class="tag warn" title="Последний остаток${x.last?` на ${fmtD(x.last.date)}`:""}">нет доступа</span> ${x.b!=null?fmt(x.b):""}`:fmt(x.b)}</td><td class="num">${fmt(x.k)}</td>
+    <td class="num ${x.diff&&Math.abs(x.diff)>=0.005?"neg":""}">${x.diff==null?"—":fmtS(x.diff)}</td><td class="num">${fmt(x.p)}</td><td class="num">${fmt(x.kp!=null?x.kp:r2(x.k-x.p))}</td>
+    <td class="num">${x.rate?fmtRate(x.rate):"—"}</td><td class="num">${x.usd!=null?fmt(x.usd):"—"}</td><td>${x.incoming!=null?`${fmt(x.incoming)} ${esc(x.incomingComment||"")}`:""}</td><td>${esc(x.comment||"")}</td>
     <td style="font-size:11px">${row.updates.map(u=>`${hm(u.t)}: ${fmt(u.b)}`).join("<br>")}</td>
     <td>${v.date===v.today?`<button class="btn sm" onclick="dbUpdateOpen('${x.pos}')">Обновить остаток</button>`:""}</td></tr>`; }).join("")}</tbody></table></div></div></div>
   <p class="muted">Обновление днём создаёт новую неизменяемую запись со временем; утренний отчёт не меняется (ТР-97). Исправить ошибку в сданном отчёте может фин. контролер или администратор — корректировкой с причиной (ТР-98).</p>`;
@@ -187,7 +189,7 @@ async function dbShowK(accId, cur, d){
   const r = await apiRaw(`/api/db/movements?pos=${encodeURIComponent(p.id)}&date=${d}`);
   if(!r.ok) return showErrors(r);
   openModal({title:`К: ${esc(nm(acc(accId)))} · ${esc(curCode(cur))} — движения до ${fmtD(r.lim)} включительно`, drawer:true, width:1000, body:()=>`
-    <div class="row" style="margin-bottom:8px"><span class="tag">К = ${fmt(r.total)} ${esc(curCode(cur))}</span><span class="muted">${r.rows.length} записей · чужие кошельки свёрнуты в «прочие кошельки» (ТР-104)</span><div style="flex:1"></div><button class="btn sm" onclick="exportTable('tDbK','Daily Balance движения К')">Выгрузить в Excel</button></div>
+    <div class="row" style="margin-bottom:8px"><span class="tag">Кф = ${fmt(r.total)} ${esc(curCode(cur))}</span><span class="muted">${r.rows.length} записей · чужие кошельки свёрнуты в «прочие кошельки» (ТР-104)</span><div style="flex:1"></div><button class="btn sm" onclick="exportTable('tDbK','Daily Balance движения К')">Выгрузить в Excel</button></div>
     <div class="tbl-wrap"><table id="tDbK" class="sortable"><thead><tr><th>Дата</th><th>Документ или операция</th><th>Кошелёк</th><th class="num">Сумма</th></tr></thead>
     <tbody>${r.rows.map(x=>`<tr class="${x.ref?"clickable":""}" ${x.ref?`onclick="dbOpen('${x.ref.k}','${x.ref.id}')"`:""}><td>${fmtD(x.date)}</td><td>${x.ref?`<a class="lnk">${esc(x.title)}</a>`:esc(x.title)}</td>
       <td>${x.wallet==="*"?`<i>${esc(x.walletName)}</i>`:x.wallet?esc(x.walletName):`<span class="tag warn">Без кошелька</span>`}</td><td class="num ${x.sum<0?"neg":"pos"}">${fmtS(x.sum)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Движений нет</td></tr>`}</tbody></table></div>`});
@@ -262,7 +264,7 @@ async function dbHistory(pid){
   if(!r.ok) return showErrors(r);
   const K = {morning:"Утренний отчёт", update:"Обновление днём", correction:"Корректировка", explained:"Объяснено"};
   openModal({title:`История позиции · ${esc(p?dbPosLabel(p):pid)}`, drawer:true, width:980, body:()=>`<div class="row" style="margin-bottom:8px"><div style="flex:1"></div><button class="btn sm" onclick="exportTable('tDbH','Daily Balance история')">Выгрузить в Excel</button></div>
-    <div class="tbl-wrap"><table id="tDbH"><thead><tr><th>D</th><th>Время</th><th>Запись</th><th>Автор</th><th class="num">Б</th><th class="num">П</th><th class="num">К</th><th class="num">Расхождение</th><th>Комментарий / причина</th></tr></thead>
+    <div class="tbl-wrap"><table id="tDbH"><thead><tr><th>D</th><th>Время</th><th>Запись</th><th>Автор</th><th class="num">Б</th><th class="num">Писх</th><th class="num">Кф</th><th class="num">Расхождение Б − Кф</th><th>Комментарий / причина</th></tr></thead>
     <tbody>${r.rows.map(x=>`<tr><td>${fmtD(x.date)}</td><td>${fmtT(x.t)}</td><td>${esc(K[x.kind]||x.kind)}${x.late?` <span class="tag off">опоздание</span>`:""}${x.noAccess?` <span class="tag warn">нет доступа</span>`:""}</td><td>${esc(x.uname||"")}</td>
       <td class="num">${x.kind==="correction"?(x.field==="b"?fmt(x.value):""):x.b!=null?fmt(x.b):""}</td><td class="num">${x.kind==="correction"?(x.field==="p"?fmt(x.value):""):x.p!=null?fmt(x.p):""}</td>
       <td class="num">${x.k!=null?fmt(x.k):""}</td><td class="num ${x.diff&&Math.abs(x.diff)>=0.005?"neg":""}">${x.diff!=null?fmtS(x.diff):""}</td><td>${esc(x.reason||x.comment||"")}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Записей нет</td></tr>`}</tbody></table></div>`});
@@ -278,7 +280,7 @@ function viewDbRecon(){
     .sort((a,b)=>(["diff","noreport","noaccess","explained","ok"].indexOf(a.status)-["diff","noreport","noaccess","explained","ok"].indexOf(b.status)) || (nm(org(a.org))+nm(acc(a.acc))).localeCompare(nm(org(b.org))+nm(acc(b.acc)),"ru"));
   const open = v.rows.filter(r=>r.status==="diff").sort((a,b)=>(b.age||0)-(a.age||0));
   return `<h1>${T} <span class="tzref">ТР-100…103</span></h1>
-  <p class="lede">По каждой позиции на день D две проверки. Первая: Б − П против К — суммы кошельков на конец D−1 с разбивкой по кошелькам. Вторая: П казначея против списка неисполненных СБДС в программе. «На момент сдачи» — снимок, сохранённый при сдаче навсегда; «Сейчас» — К и П пересчитаны с учётом документов, донесённых позже.</p>
+  <p class="lede">По каждой позиции на день D две проверки. Главная: Б против Кф — фактического расчётного остатка кошельков на конец D−1 (операции, исполненные банком) с разбивкой по кошелькам; Расхождение = Б − Кф. Вторая: исходящие в пути, подтверждённые казначеем (Писх), против списка неисполненных СБДС в программе. Плановый остаток Кп = Кф − Писх в расхождении не участвует. «На момент сдачи» — снимок, сохранённый при сдаче навсегда; «Сейчас» — Кф и Писх пересчитаны с учётом документов, донесённых позже.</p>
   <div class="db-head">
     <div class="ok"><span>Подтверждено</span><b>${confirmed} из ${S.total}</b><small>сходится ${S.ok||0} · объяснено ${S.explained||0}</small></div>
     <div class="${S.diff?"bad":""}"><span>Расхождения</span><b>${S.diff||0}</b></div>
@@ -291,7 +293,7 @@ function viewDbRecon(){
     <label class="fld"><span>Организация</span><select onchange="DBV.org=this.value;render()">${opts([...new Set(v.rows.map(r=>r.org))].map(o=>org(o)).filter(Boolean), DBV.org, {empty:"Все"})}</select></label>
     <label class="fld"><span>Валюта</span><select onchange="DBV.cur=this.value;render()">${opts([...new Set(v.rows.map(r=>r.cur))].map(c=>({id:c,name:curCode(c)})), DBV.cur, {empty:"Все"})}</select></label>`)}
   <div class="panel"><header><h2>${rows.length} позиций</h2><div style="flex:1"></div>${exportBtn("tDbR","Daily Balance сверка")}</header><div class="body flush"><div class="tbl-wrap"><table id="tDbR">
-    <thead><tr><th></th><th>Организация</th><th>Счёт или касса · ответственный</th><th>Вал.</th><th class="num">Б</th><th class="num">П</th><th class="num">Б − П</th><th class="num">К</th><th class="num">Расхождение</th><th>Статус</th><th class="num" title="Проверка 2: П казначея минус список неисполненных СБДС программы">П: казн. − прогр.</th><th></th></tr></thead>
+    <thead><tr><th></th><th>Организация</th><th>Счёт или касса · ответственный</th><th>Вал.</th><th class="num">Б</th><th class="num">Кф</th><th class="num">Расхождение Б − Кф</th><th>Статус</th><th class="num">Писх</th><th class="num">Кп</th><th class="num" title="Проверка 2: Писх казначея минус список неисполненных СБДС программы">Писх: казн. − прогр.</th><th></th></tr></thead>
     <tbody>${rows.map(r=>dbReconRow(r, v, act, closed)).join("") || `<tr><td colspan="12" class="muted">Нет позиций${(DB.dbPositions||[]).length?"":" — администратор ещё не добавил позиции в модуль"}</td></tr>`}</tbody></table></div></div></div>`;
 }
 function dbReconRow(r, v, act, closed){
@@ -302,21 +304,21 @@ function dbReconRow(r, v, act, closed){
   const p2 = r.p2; const H = r.hints||{};
   const main = `<tr class="${r.status==="diff"?"bad":""} clickable" onclick="DBV.open['${r.pos}']=!DBV.open['${r.pos}'];render()">
     <td><span class="caret ${o?"open":""}"></span></td><td>${esc(nm(org(r.org)))}</td><td>${esc(nm(acc(r.acc)))}<div class="sub">${esc(r.owner?nm(usr(r.owner)):"ответственный не назначен")}</div></td><td>${esc(curCode(r.cur))}</td>
-    <td class="num">${r.status==="noaccess"?`<span class="muted" title="Последний доступный остаток${r.last?` на ${fmtD(r.last.date)}`:""}">${bCell}</span>`:bCell}</td><td class="num">${pCell}</td>
-    <td class="num">${r.b!=null&&r.p!=null?fmt(r2(r.b-r.p)):"—"}</td>
+    <td class="num">${r.status==="noaccess"?`<span class="muted" title="Последний доступный остаток${r.last?` на ${fmtD(r.last.date)}`:""}">${bCell}</span>`:bCell}</td>
     <td class="num"><a class="lnk" onclick="event.stopPropagation();dbShowK('${r.acc}','${r.cur}','${r.date}')" title="Движения позиции">${fmt(r.k)}</a></td>
     <td class="num ${r.status==="diff"?"neg":""}"><b>${r.diff!=null?fmtS(r.diff):"—"}</b></td>
     <td><span class="tag ${stC}">${stN}</span>${r.age?` <span class="muted">${r.age} дн.</span>`:""}${r.late?` <span class="tag off">сдан с опозданием</span>`:""}</td>
+    <td class="num">${pCell}</td><td class="num">${r.kp!=null?fmt(r.kp):"—"}</td>
     <td class="num ${p2&&Math.abs(p2.diff)>=0.005?"amber":""}">${p2?fmtS(p2.diff):"—"}</td>
     <td class="nowrap" onclick="event.stopPropagation()">${act&&r.status==="diff"?`<button class="btn sm" onclick="dbExplainOpen('${r.pos}','${r.date}')">Объяснено</button>`:""}${act&&r.report&&!closed?` <button class="btn sm ghost" onclick="dbCorrOpen('${r.report}','${r.pos}')">Корректировать</button>`:""}</td></tr>`;
   if(!o) return main;
   return main + `<tr class="detail"><td colspan="12"><div class="db-detail">
-    <div><h4>Проверка 1: К по кошелькам на конец ${fmtD(addDays(r.date,-1))}</h4>
+    <div><h4>Проверка 1: Кф по кошелькам на конец ${fmtD(addDays(r.date,-1))}</h4>
       <table class="mini"><tbody>${(r.kSplit||[]).map(k=>`<tr><td>${k.wallet==="*"?`<i>${esc(k.name)}</i>`:k.wallet?esc(k.name):`<span class="tag warn">Без кошелька</span>`}</td><td class="num">${fmt(k.sum)}</td></tr>`).join("") || `<tr><td class="muted" colspan="2">Движений нет</td></tr>`}
-      <tr class="tot"><td>К</td><td class="num">${fmt(r.k)}</td></tr></tbody></table>
+      <tr class="tot"><td>Кф</td><td class="num">${fmt(r.k)}</td></tr></tbody></table>
       ${r.comment?`<p><b>Комментарий казначея:</b> ${esc(r.comment)}</p>`:""}${r.incoming!=null?`<p class="muted">Входящие в пути (справочно): ${fmt(r.incoming)}</p>`:""}
       ${r.explained?`<div class="alert info">Объяснено: <span class="notr">${esc(r.explained.comment)}</span> — ${esc(r.explained.uname)}, ${fmtDT(r.explained.t)}</div>`:""}</div>
-    <div><h4>Проверка 2: П казначея ${p2?fmt(p2.treasurer):"—"} против программы ${p2?fmt(p2.program):"—"}</h4>
+    <div><h4>Проверка 2: Писх казначея ${p2?fmt(p2.treasurer):"—"} против программы ${p2?fmt(p2.program):"—"}</h4>
       ${p2?`${p2.missing.length?`<p class="amber">Не отмечены казначеем, но не исполнены банком по данным программы:</p><ul>${p2.missing.map(x=>`<li><a class="lnk" onclick="dbOpen('doc','${x.doc}')">${esc(x.no||"")}</a> от ${fmtD(x.date)} — ${fmt(x.sum)} ${esc(x.cpty||"")}</li>`).join("")}</ul>`:""}
         ${p2.extra.length?`<p class="amber">Отмечены казначеем, но программа их уже не считает в пути:</p><ul>${p2.extra.map(x=>`<li><a class="lnk" onclick="dbOpen('doc','${x.doc}')">${esc(x.no||"")}</a> — ${fmt(x.sum)}</li>`).join("")}</ul>`:""}
         ${p2.manual.length?`<p>Ручные суммы П:</p><ul>${p2.manual.map(m=>`<li>${fmt(m.sum)} — ${esc(m.comment||"")}</li>`).join("")}</ul>`:""}
@@ -326,7 +328,7 @@ function dbReconRow(r, v, act, closed){
       <li>Последний документ по позиции: ${H.lastDoc?fmtD(H.lastDoc):"нет"}</li>
       ${H.noWallet?`<li class="amber">Строк без кошелька: ${H.noWallet} ${seesNoWallet(me())?`<a class="lnk" onclick="go('nowallet')">открыть</a>`:""}</li>`:""}
       ${(H.review||[]).length?`<li class="amber">«Требует проверки»: ${H.review.map(x=>`<a class="lnk" onclick="dbOpen('doc','${x.doc}')">${esc(x.no||"")}</a>`).join(", ")}</li>`:""}
-      <li><a class="lnk" onclick="dbShowK('${r.acc}','${r.cur}','${r.date}')">Движения позиции (клик по К)</a> · <a class="lnk" onclick="dbHistory('${r.pos}')">История позиции</a></li></ul></div>
+      <li><a class="lnk" onclick="dbShowK('${r.acc}','${r.cur}','${r.date}')">Движения позиции (клик по Кф)</a> · <a class="lnk" onclick="dbHistory('${r.pos}')">История позиции</a></li></ul></div>
   </div></td></tr>`;
 }
 let DBE = null;
@@ -346,7 +348,7 @@ let DBC = null;
 function dbCorrOpen(rep, pid){
   const p = posOf(pid); const row = DBV.recon.rows.find(x=>x.pos===pid); DBC = {report:+rep, pos:pid, field:"b", value:null, reason:""};
   openModal({title:`Корректировка · ${esc(p?dbPosLabel(p):"")} за ${fmtD(row.date)}`, width:560, body:()=>`
-    <div class="seg" style="margin-bottom:10px">${[["b","Б — остаток по банку"],["p","П — исходящие в пути"]].map(([k,t])=>`<button type="button" class="${DBC.field===k?"on":""}" onclick="DBC.field='${k}';refreshModal()">${t}</button>`).join("")}</div>
+    <div class="seg" style="margin-bottom:10px">${[["b","Б — остаток по банку"],["p","Писх — исходящие в пути"]].map(([k,t])=>`<button type="button" class="${DBC.field===k?"on":""}" onclick="DBC.field='${k}';refreshModal()">${t}</button>`).join("")}</div>
     <p>Сейчас: <b>${fmt(DBC.field==="b"?row.b:row.p)}</b>${(DBC.field==="b"?row.bCorr:row.pCorr)?` (исходное ${fmt(DBC.field==="b"?row.bOrig:row.pOrig)})`:""}</p>
     <label class="fld"><span>Новое значение <em>*</em></span>${sumWithCur(moneyInput({id:"dbcV", value:DBC.value, onchange:"DBC.value=parseNum(this.value)"}), row.cur)}</label>
     <label class="fld" style="margin-top:8px"><span>Причина <em>*</em></span><textarea rows="3" id="dbcR" onchange="DBC.reason=this.value">${esc(DBC.reason)}</textarea></label>
