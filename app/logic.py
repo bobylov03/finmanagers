@@ -32,7 +32,14 @@ MANUAL_OPS = {
     "ПКО": ["Прочее поступление", "Оплата от клиента", "Поступление наличных из банка", "Возврат от подотчётника"],
     "ПЕР": ["Конвертация валюты", "Перечисление на другой счёт", "Оплата в другую организацию группы", "Инкассация"],
 }
-RULE_FIELDS = {"org": "Организация", "acc": "Счёт или касса", "dept": "Подразделение", "cf": "Тип расхода CF", "zone": "Зона ответственности", "cpty": "Контрагент"}
+# ТР-73, ДР-02: условия правил — организация, счёт, подразделение, тип расхода CF, контрагент. «Зона ответственности» исключена из данных ERP
+RULE_FIELDS = {"org": "Организация", "acc": "Счёт или касса", "dept": "Подразделение", "cf": "Тип расхода CF", "cpty": "Контрагент"}
+LEGACY_RULE_FIELDS = {"zone": "Зона ответственности"}
+
+
+def rule_needs_fix(r):
+    """ДР-03: правило с условием по исключённому полю не применяется до перенастройки; условие не удаляется автоматически."""
+    return [c.get("field") for c in r.get("conds") or [] if c.get("field") not in RULE_FIELDS]
 RULE_OPS = {"eq": "Равно", "ne": "Не равно", "in": "В списке", "group": "В группе"}
 
 
@@ -276,7 +283,7 @@ def cond_result(C, c, ctx):
 
 def match_rule(C, ctx, d):
     for r in C.S["rules"]:
-        if not r.get("active"):
+        if not r.get("active") or rule_needs_fix(r):
             continue
         w = C.get("wallets", r.get("wallet"))
         if not w or wallet_closed_at(C, w, d):
@@ -307,37 +314,127 @@ def apply_rules(C, doc, force=False):
     return n
 
 
-# ---------------- состояния документа (ТР-107) и расчёт фактов ----------------
-STATE_NAMES = {"deleted": "Помечен на удаление", "notposted": "Не проведён", "posted": "Проведён"}   # ТР-14 v1.5.1: статуса «Исключён» нет
+# ---------------- состояния документа (ТР-107, ДР-04…09) и расчёт фактов ----------------
+# ДР-04: три состояния; «Нет данных» — не состояние, а указание, что признаки ERP не получены
+STATE_NAMES = {"deleted": "Помечен на удаление", "notposted": "Не проведён", "posted": "Проведён", "nodata": "Нет данных"}
+# ДР-05, ТР-91: признаки ERP по GUID — Да (True) / Нет (False) / Нет данных (None)
+FLAG_KEYS = ("posted", "approved", "deleted", "bank")
+FLAG_NAMES = {"posted": "Проведён", "approved": "Согласован", "deleted": "Помечен на удаление", "bank": "Проведено банком", "bankDate": "Дата проведения банком"}
+
+
+def doc_flags(d):
+    """Признаки документа ERP. У ручного документа и ПЕР — из самого документа. У документа из файла — полученные из ERP
+    (колонки файла или отдельная загрузка признаков по GUID); не полученный признак — None, а не «Нет» (ДР-05)."""
+    if d.get("source") != "file" or d.get("type") == "ПЕР":
+        dl = bool(d.get("deleted")) or d.get("status") == "Помечен на удаление"
+        return {"posted": d.get("status") == "Проведён" and not dl, "approved": True, "deleted": dl, "bank": None}
+    f = d.get("flags")
+    if isinstance(f, dict) and f.get("v"):
+        return {k: f.get(k) for k in FLAG_KEYS}
+    # документ, загруженный до ДР-04: признаки берутся из старых полей, кроме формата из 17 полей,
+    # где состояние было предположено программой — там признаков нет (ДР-07)
+    if d.get("fmt") == "erp17":
+        return {"posted": None, "approved": None, "deleted": None, "bank": None}
+    st = d.get("status") or ""
+    return {"posted": (st == "Проведён") if st in ("Проведён", "Не проведён", "Помечен на удаление") else None,
+            "approved": d.get("approved") if d.get("type") == "СБДС" else True, "deleted": st == "Помечен на удаление", "bank": None}
+
+
+def tri_text(v):
+    return "Да" if v is True else "Нет" if v is False else "Нет данных"
+
+
+def dup_state(C, d):
+    """ДР-01: результат проверки на двойной учёт. matched — движение уже введено вручную; nomatch / ambiguous — ждёт казначея;
+    accepted — казначей подтвердил, что движение учитывается по документу. Удалённая ручная пара возвращает документ казначею."""
+    x = d.get("dup") or {}
+    st = x.get("st")
+    if st == "matched":
+        m = C.get("docs", x.get("manual"))
+        if not m or not doc_counts_manual(C, m):
+            return "lost"
+    return st
+
+
+def doc_counts_manual(C, m):
+    st = C.S["settings"]
+    if m.get("deleted") or m.get("status") != "Проведён":
+        return False
+    return not (m.get("source") == "manual" and st.get("switchDate") and m["date"] >= st["switchDate"])
+
+
+def doc_eval(C, d):
+    """Состояние, полнота данных и участие документа в расчёте (ДР-04…09).
+    st — состояние; missing — недостающие признаки; conflict — противоречие признака исполнения и даты банка;
+    counts — документ формирует движение; kf — дата в Кф для СБДС (дата исполнения банком или FAR)."""
+    S_ = C.S["settings"]
+    f = doc_flags(d)
+    missing, conflict, note = [], "", ""
+    if d.get("source") != "file" or d.get("type") == "ПЕР":
+        if f["deleted"] or (d.get("source") == "manual" and S_.get("switchDate") and d["date"] >= S_["switchDate"]):
+            st = "deleted"     # ТР-72: ручной документ заменён документами 1С
+        else:
+            st = "posted" if f["posted"] else "notposted"
+        ok = st == "posted"
+    else:
+        if f["deleted"]:
+            st = "deleted"
+        elif d.get("excluded"):
+            st = "notposted"   # нет в последней загрузке своего периода (ТР-62) — вне расчёта, история сохраняется
+        elif f["posted"] is None:
+            st = "nodata"
+        else:
+            st = "posted" if f["posted"] else "notposted"
+        if f["posted"] is None:
+            missing.append("posted")
+        if d.get("type") == "СБДС":
+            if f["approved"] is None:
+                missing.append("approved")
+            if f["bank"] is None:
+                missing.append("bank")
+            elif f["bank"] and not d.get("bankDate"):
+                missing.append("bankDate")
+            if f["bank"] is False and d.get("bankDate"):
+                conflict = f"«Проведено банком» = Нет, но в отчёте ERP есть дата проведения банком {fmt_d(d['bankDate'])}"
+        ok = st == "posted" and (d.get("type") != "СБДС" or f["approved"] is True)
+        ds = dup_state(C, d)
+        if ok and ds in ("matched", "nomatch", "ambiguous", "lost"):
+            ok = False
+            note = {"matched": "движение уже введено вручную (ТР-70)", "nomatch": "нет ручной операции — ждёт проверки казначея (ТР-70)",
+                    "ambiguous": "несколько подходящих ручных операций — ждёт подтверждения казначея (ТР-70)",
+                    "lost": "сопоставленная ручная операция удалена — ждёт проверки казначея (ТР-70)"}[ds]
+    counts = ok and not (S_.get("startDate") and d["date"] < S_["startDate"])
+    kf = d["date"]
+    if d.get("type") == "СБДС":
+        bd = d.get("bankDate") or ""
+        kf = max(bd, d["date"]) if (f["bank"] is True and bd and not conflict) else FAR
+    return {"st": st, "flags": f, "missing": missing, "conflict": conflict, "counts": counts, "kf": kf, "note": note}
+
+
+def needs_review(C, d):
+    """ДР-08: служебная отметка «Требует проверки» — существенные изменения (ТР-85), противоречие признаков ERP (ДР-05)
+    или проверка двойного учёта (ДР-01). Не состояние документа."""
+    if d.get("review"):
+        return True
+    if d.get("source") != "file" or d.get("excluded"):
+        return False
+    ev = doc_eval(C, d)
+    return bool(ev["conflict"]) or (ev["st"] == "posted" and dup_state(C, d) in ("nomatch", "ambiguous", "lost"))
 
 
 def doc_state(C, d):
-    """Ровно одно состояние; при нескольких основаниях берётся строка выше в таблице ТР-107."""
-    st = C.S["settings"]
-    if d.get("deleted") or d.get("status") == "Помечен на удаление":
-        return "deleted"
-    if d.get("source") == "manual" and st.get("switchDate") and d["date"] >= st["switchDate"]:
-        return "deleted"    # ТР-72: ручной документ заменён документами 1С; «Исключён» — только отсутствие в файле (ТР-107)
-    if d.get("excluded"):
-        return "notposted"   # нет в последней загрузке своего периода (ТР-62) — вне расчёта, история сохраняется
-    if d.get("status") != "Проведён" or (d.get("type") == "СБДС" and d.get("approved") is False):
-        return "notposted"
-    return "posted"
+    """Ровно одно состояние (ДР-04); при отсутствии признаков ERP — «Нет данных»."""
+    return doc_eval(C, d)["st"]
 
 
 def doc_counts(C, d):
-    st = C.S["settings"]
-    if doc_state(C, d) != "posted":
-        return False
-    if st.get("startDate") and d["date"] < st["startDate"]:
-        return False
-    return True
+    return doc_eval(C, d)["counts"]
 
 
 def movement_snap(C, d):
     """Движение документа, которое сохраняется в расчёте до проверки казначеем (ТР-85)."""
     snap = {"counted": doc_counts(C, d), "date": d["date"], "org": d.get("org"), "acc": d.get("acc"), "cur": d.get("cur"), "status": d.get("status"),
-            "approved": d.get("approved"), "lines": [{"sum": l.get("sum"), "usd": l.get("usd"), "wallet": l.get("wallet"), "cf": l.get("cf"),
+            "approved": d.get("approved"), "flags": doc_flags(d), "lines": [{"sum": l.get("sum"), "usd": l.get("usd"), "wallet": l.get("wallet"), "cf": l.get("cf"),
                                                       "dept": l.get("dept"), "zone": l.get("zone"), "cpty": l.get("cpty"), "split": l.get("split")} for l in d.get("lines") or []]}
     if d.get("type") == "ПЕР":
         snap["from"], snap["to"] = dict(d.get("from") or {}), dict(d.get("to") or {})
@@ -430,8 +527,7 @@ def facts(C):
             sg = DOC_TYPES[d["type"]]["sign"]
             dd, kp = d["date"], d["date"]
             if d["type"] == "СБДС":
-                bank = d0_.get("bankDate") or ""
-                dd = max(bank, d["date"]) if bank else FAR
+                dd = doc_eval(C, d0_)["kf"]   # ДР-09: в Кф — только после исполнения банком (признак «Да» и дата)
                 c_ = confs.get(d0_["id"])
                 kp = min(dd, max(d["date"], c_)) if c_ else dd
             for l in d["lines"]:
@@ -556,9 +652,13 @@ def notifications(C, u, d=None):
     no_w = sum(1 for f in facts(C) if not f["wallet"] and f.get("doc"))
     if no_w and (A or has(u, "treasurer") or has(u, "finControl")):
         out.append({"lvl": "warn", "text": f"Строк без кошелька: {no_w}", "tr": "ТР-23", "go": "nowallet"})
-    rv = [d for d in C.S["docs"] if d.get("review") and can_review(C, u, d)]
+    rv = [d for d in C.S["docs"] if needs_review(C, d) and can_review(C, u, d)]
     if rv:
-        out.append({"lvl": "warn", "text": f"Документы требуют проверки после изменения в ERP: {len(rv)}", "tr": "ТР-85", "go": "docs?state=review"})
+        out.append({"lvl": "warn", "text": f"Документы требуют проверки: {len(rv)}", "tr": "ТР-85, ТР-70", "go": "docs?state=review"})
+    nd = [d for d in C.S["docs"] if d.get("source") == "file" and not d.get("excluded") and doc_eval(C, d)["missing"]
+          and (A or can_review(C, u, d))]
+    if nd:
+        out.append({"lvl": "warn", "text": f"Нет данных ERP по документам (признаки не получены): {len(nd)} — в расчёт не входят", "tr": "ДР-07", "go": "docs?state=nodata"})
     try:
         from .daily import db_notifications
         out += db_notifications(C, u, d)
@@ -600,7 +700,10 @@ def doc_snap(C, d):
     if d["type"] == "ПЕР":
         return {"дата": d["date"], "сумма": f"{fmt_in(d['from'].get('sum'))} → {fmt_in(d['to'].get('sum'))}",
                 "кошелёк": f"{wn(d['from'].get('wallet'))} → {wn(d['to'].get('wallet'))}", "статус": "помечен" if d.get("deleted") else d["status"]}
-    st = "нет в загрузке" if d.get("excluded") else "помечен на удаление" if d.get("deleted") else d["status"] + (", не согласован" if d["type"] == "СБДС" and d.get("approved") is False else "")
+    ev = doc_eval(C, d)
+    st = "нет в загрузке" if d.get("excluded") else STATE_NAMES[ev["st"]].lower()
+    if d["type"] == "СБДС" and d.get("source") == "file":
+        st += f"; согласован: {tri_text(ev['flags']['approved']).lower()}; проведено банком: {tri_text(ev['flags']['bank']).lower()}"
     return {"дата": d["date"], "сумма": fmt_in(r2(sum(l.get("sum") or 0 for l in d["lines"]))),
             "кошелёк": ", ".join(dict.fromkeys(wn(p["wallet"]) + (f" {fmt(p['sum'])}" if l.get("split") else "") for l in d["lines"] for p in line_parts(l))), "статус": st}
 
@@ -620,20 +723,25 @@ def add_version(C, kind, obj, before, after, source, u):
     return True
 
 
-# ---------------- автозакрытие периода (ТР-55) ----------------
+# ---------------- автозакрытие периода (ТР-55, ДР-13) ----------------
+def next_close_day(pe):
+    """5-е число месяца, следующего за концом периода pe."""
+    d = date.fromisoformat(pe) + timedelta(days=1)
+    return d.replace(day=5).isoformat()
+
+
 def auto_close_period(C):
     st = C.S["settings"]
-    if not st.get("autoClose") or not C.S["opening"]:
-        return False
+    if not st.get("autoClose"):
+        return False   # ДР-13: не зависит от ввода входящих остатков
     t = today_iso()
-    if int(t[8:10]) < 5:
-        return False
-    pe = prev_month_end(t)
+    # 5-го числа закрывается предыдущий месяц; до 5-го — догоняется пропущенное закрытие позапрошлого месяца
+    pe = prev_month_end(t) if int(t[8:10]) >= 5 else prev_month_end(prev_month_end(t))
     if st.get("startDate") and pe < st["startDate"]:
         return False
     if st.get("closedTo") and st["closedTo"] >= pe:
         return False
     before = st.get("closedTo")
     C.st.set_setting("closedTo", pe)
-    C.st.audit(None, "Закрытие периода", "", f"{fmt_d(before) if before else '—'} → {fmt_d(pe)} (автоматически, 5-е число)", uname="Система")
+    C.st.audit(None, "Закрытие периода", "", f"{fmt_d(before) if before else '—'} → {fmt_d(pe)} (автоматически, 5-е число{', пропущенное закрытие' if t > next_close_day(pe) else ''})", uname="Система")
     return True

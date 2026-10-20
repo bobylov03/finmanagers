@@ -15,7 +15,7 @@ from . import actions as A
 from . import daily as DB_
 from . import importer as I
 from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
-                    own_wallets, recon, reconciled_days, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
+                    own_wallets, recon, reconciled_days, doc_eval, dup_state, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
 from .mailer import mail_configured, send_notifications
 from .store import Store
 from .util import now_iso, today_iso
@@ -37,6 +37,7 @@ def create_app(db_path=None, start_scheduler=True):
             store.add("users", {"id": "U_ADMIN", "name": "Администратор", "login": "admin", "email": "", "roles": ["admin"], "wallets": [],
                                 "active": True, "lang": "", "pw": None})
         store.purge_old_audit()
+        auto_close_period(Ctx(store))   # ДР-13: пропущенное закрытие выполняется при запуске
         reset_pw = os.environ.get("ADMIN_RESET_PASSWORD", "")
         if reset_pw:
             reset_admin_password(store, reset_pw, "переменная окружения ADMIN_RESET_PASSWORD")
@@ -231,6 +232,8 @@ def create_app(db_path=None, start_scheduler=True):
         confs = sent_confirmations(c)   # Писх: подтверждённые казначеем исходящие в пути
         if confs:
             docs = [dict(x, sentConf=confs[x["id"]]) if x["id"] in confs else x for x in docs]
+        # ДР-04…09: состояние, признаки ERP, полнота данных и участие в расчёте считает сервер — интерфейс только показывает
+        docs = [dict(x, ev=doc_eval(c, c.get("docs", x["id"]) or x), dupInfo=dup_info(c, x)) for x in docs]
         out.update(docs=docs, ops=ops, opening=opening, contracts=contracts)
         # кошельки: администратор — все; остальные — свои, у казначея ещё названия активных нескрытых (раздел 8), чужие скрытые — замаскированы
         if adm:
@@ -281,7 +284,8 @@ def create_app(db_path=None, start_scheduler=True):
         out["perms"] = {"visible": sorted(V), "editable": sorted(w["id"] for w in S["wallets"] if can_edit_wallet(c, u, w["id"])),
                         "admin": adm, "canEnter": can_enter(u), "seesNoWallet": nw, "canUpload": bool(upl),
                         "dbFull": DB_.full_access(u), "dbMine": [p["id"] for p in DB_.my_positions(c, u)],
-                        "review": [d["id"] for d in S["docs"] if d.get("review") and can_review(c, u, d)]}
+                        "review": [d["id"] for d in S["docs"] if d.get("review") and can_review(c, u, d)],
+                        "dup": [d["id"] for d in S["docs"] if d.get("dup") and can_review(c, u, d)]}
         out["dbToday"] = DB_.today_local(c)
         out["dbCurrent"] = DB_.current_day(c)
         out["version"] = store.version
@@ -348,6 +352,11 @@ def create_app(db_path=None, start_scheduler=True):
     @app.post("/api/docs/<doc_id>/confirm")
     def doc_confirm(doc_id):
         return act(A.confirm_review, doc_id)
+
+    @app.post("/api/docs/<doc_id>/dup")
+    def doc_dup(doc_id):
+        p = body()
+        return act(A.dup_decide, doc_id, p.get("action"), p.get("manual"))
 
     @app.post("/api/statemap")
     def statemap():
@@ -482,7 +491,7 @@ def create_app(db_path=None, start_scheduler=True):
     @app.post("/api/import/<kind>/apply")
     def imp_apply(kind):
         p = body()
-        fn = {"exp": I.apply_exp, "ref": I.apply_ref, "bal": I.apply_bal}.get(kind)
+        fn = {"exp": I.apply_exp, "ref": I.apply_ref, "bal": I.apply_bal, "flags": I.apply_flags}.get(kind)
         if not fn:
             raise A.ApiError(["Неизвестный вид загрузки"])
         return act(fn, p, (p.get("fileName") or "файл")[:200])
@@ -577,6 +586,21 @@ def reset_admin_password(store, password, how):
     store.conn.execute("DELETE FROM sessions WHERE user_id=?", (adm["id"],))
     store.audit(None, "Сброс пароля администратора", adm["name"], how, uname="Система")
     return adm
+
+
+def dup_info(c, d):
+    """ДР-01: результат проверки на двойной учёт для карточки документа — сопоставленная и возможные ручные операции."""
+    x = d.get("dup") or {}
+    if not x:
+        return None
+    from .importer import DUP_NAMES, dup_candidates
+    st = dup_state(c, d)
+    taken = {(y.get("dup") or {}).get("manual") for y in c.S["docs"] if y.get("id") != d["id"] and (y.get("dup") or {}).get("manual")}
+    cand = dup_candidates(c, d, taken) if st in ("nomatch", "ambiguous", "lost") else []
+    m = c.get("docs", x.get("manual"))
+    return {"st": st, "res": DUP_NAMES.get(st, ""), "by": x.get("by"), "u": x.get("u"), "t": x.get("t"),
+            "manual": {"id": m["id"], "no": m.get("no"), "date": m["date"], "sum": (m.get("from") or {}).get("sum")} if m else None,
+            "cands": [{"id": y["id"], "no": y.get("no"), "date": y["date"], "sum": (y.get("from") or {}).get("sum")} for y in cand]}
 
 
 def scheduler(store):

@@ -141,12 +141,15 @@ function cmdKey(e){
 document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && (e.key==="k"||e.key==="K"||e.code==="KeyK") && SESSION){ e.preventDefault(); CMD ? closeCmd() : openCmd(); } });
 
 /* --- выбор кошельков: кнопка с выпадающим деревом --- */
-function walletPicker(key, selected, onToggle, {label="Кошельки", all="Все доступные", onClear="", onAll=""}={}){
+/* ДР-10: служебная группа «Без кошелька» в выборе кошельков — не кошелёк справочника */
+const NOWAL = "__nowallet";
+const wpName = id => id===NOWAL ? "Без кошелька" : nm(wal(id));
+function walletPicker(key, selected, onToggle, {label="Кошельки", all="Все доступные", onClear="", onAll="", noWallet=false}={}){
   const id = "v:"+key; const open = POP===id;
-  const txt = !selected.length ? all : selected.length===1 ? nm(wal(selected[0])) : `${nm(wal(selected[0]))} и ещё ${selected.length-1}`;
+  const txt = !selected.length ? all : selected.length===1 ? wpName(selected[0]) : `${wpName(selected[0])} и ещё ${selected.length-1}`;
   return `<div class="fld popwrap"><span>${esc(label)}</span>
     <button type="button" class="picker ${selected.length?"set":""}" onclick="togglePop('${id}',event)" aria-expanded="${open}"><span>${esc(txt)}</span><span class="caret"></span></button>
-    ${open?`<div class="pop pop-left">${walletChecklist(selected,onToggle)}
+    ${open?`<div class="pop pop-left">${walletChecklist(selected,onToggle)}${noWallet && seesNoWallet(me())?`<div class="msel" style="border-top:1px solid var(--line-soft);margin-top:4px;padding-top:4px"><label class="chk"><input type="checkbox" ${selected.includes(NOWAL)?"checked":""} onchange="${onToggle}('${NOWAL}',this.checked)"> <span title="Строки, не распределённые по кошелькам (ТР-23)"><i>Без кошелька</i> <span class="muted">· служебная группа</span></span></label></div>`:""}
       <div class="pop-foot">${onAll?`<button type="button" class="btn sm" onclick="${onAll}">Выбрать все</button>`:""}${onClear?`<button type="button" class="btn sm" onclick="${onClear}">Снять</button>`:""}<div style="flex:1"></div><button type="button" class="btn sm primary" onclick="closePop()">Готово</button></div></div>`:""}</div>`;
 }
 /* --- переключатель-флажок в виде «чипа» --- */
@@ -270,13 +273,28 @@ const amt = (n, curId, {signed=false, dec=2}={}) => `<span class="num ${n<0?"neg
 /* --- выгрузка в Excel: только то, что видно на экране (ТР-36) --- */
 function exportTable(tableId, name){
   const t = document.getElementById(tableId); if(!t){ alert("Нет данных для выгрузки"); return; }
-  const rows = [...t.querySelectorAll("tr")].map(tr=>[...tr.children].map(td=>{
-    const txt = (td.tagName==="TH" ? td.textContent : td.innerText).replace(/[\u00a0\u202f]/g," ").replace(/\s*\n\s*/g,"; ").trim();
-    if(td.classList.contains("num")){ const n = parseNum(txt.replace(/^\+/,"").replace(/[A-Z]{3}$/,"").trim()); if(isFinite(n)) return n; }
-    return txt;
-  }));
+  // ДР-14: многоуровневая шапка — ячейки ставятся по сетке с учётом colspan/rowspan, объединения переносятся в Excel,
+  // поэтому каждый заголовок оказывается над своими колонками
+  const rows = [], merges = [], taken = new Set();
+  const trs = [...t.querySelectorAll("tr")];
+  const headN = t.tHead ? t.tHead.rows.length : 0;
+  trs.forEach((tr, ri)=>{
+    const row = rows[ri] = rows[ri] || [];
+    let ci = 0;
+    [...tr.children].forEach(td=>{
+      while(taken.has(ri+":"+ci)) ci++;
+      const cs = Math.max(1, +td.getAttribute("colspan")||1), rs = Math.max(1, +td.getAttribute("rowspan")||1);
+      let v = (td.tagName==="TH" ? td.textContent : td.innerText).replace(/[\u00a0\u202f]/g," ").replace(/\s*\n\s*/g,"; ").trim();
+      if(td.tagName!=="TH" && td.classList.contains("num")){ const n = parseNum(v.replace(/^\+/,"").replace(/[A-Z]{3}$/,"").trim()); if(isFinite(n)) v = n; }
+      row[ci] = ri < headN ? {v, bold:true} : v;
+      for(let r=0;r<rs;r++) for(let c=0;c<cs;c++){ taken.add((ri+r)+":"+(ci+c)); if(r||c){ (rows[ri+r] = rows[ri+r] || [])[ci+c] = rows[ri+r][ci+c] ?? ""; } }
+      if(cs>1 || rs>1) merges.push(`${colL(ci)}${ri+1}:${colL(ci+cs-1)}${ri+rs}`);
+      ci += cs;
+    });
+  });
+  rows.forEach((r,i)=>{ for(let k=0;k<r.length;k++) if(r[k]===undefined) r[k] = ""; });
   const fname = `${name} ${CUR.date}.xlsx`;
-  downloadBlob(xlsxBlob([{name:name.slice(0,31), rows}]), fname);
+  downloadBlob(xlsxBlob([{name:name.slice(0,31), rows, merges}]), fname);
   audit("Выгрузка в Excel", name, `файл ${fname}; строк ${rows.length-1}; ${reportFilterText(VIEW)}`);
 }
 /** ТР-44: просмотр отчёта с фильтрами — пишется при открытии и при каждом изменении фильтров */

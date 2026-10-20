@@ -108,8 +108,9 @@ function xlsxBlob(sheets){
       if(typeof o.v === "number" && isFinite(o.v)) return `<c r="${ref}" s="${o.dec===6?4:(bold?3:2)}"><v>${o.v}</v></c>`;
       return `<c r="${ref}" t="inlineStr"${bold?' s="1"':""}><is><t xml:space="preserve">${xmlE(o.v)}</t></is></c>`;
     }).join("")}</row>`).join("");
-    const widths = (sh.rows[0]||[]).map((_,ci)=>{ let w = 8; sh.rows.slice(0,200).forEach(r=>{ const c=r[ci]; const v = c&&typeof c==="object"?c.v:c; w = Math.max(w, String(v??"").length+2); }); return `<col min="${ci+1}" max="${ci+1}" width="${Math.min(w,60)}" customWidth="1"/>`; }).join("");
-    files.push({name:`xl/worksheets/sheet${si+1}.xml`, data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${widths?`<cols>${widths}</cols>`:""}<sheetData>${rowsXml}</sheetData></worksheet>`});
+    const nCols = Math.max(0, ...sh.rows.slice(0,50).map(r=>r.length));
+    const widths = Array.from({length:nCols}).map((_,ci)=>{ let w = 8; sh.rows.slice(0,200).forEach(r=>{ const c=r[ci]; const v = c&&typeof c==="object"?c.v:c; w = Math.max(w, String(v??"").length+2); }); return `<col min="${ci+1}" max="${ci+1}" width="${Math.min(w,60)}" customWidth="1"/>`; }).join("");
+    files.push({name:`xl/worksheets/sheet${si+1}.xml`, data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${widths?`<cols>${widths}</cols>`:""}<sheetData>${rowsXml}</sheetData>${(sh.merges||[]).length?`<mergeCells count="${sh.merges.length}">${sh.merges.map(m=>`<mergeCell ref="${m}"/>`).join("")}</mergeCells>`:""}</worksheet>`});
   });
   return zipStore(files);
 }
@@ -383,9 +384,11 @@ const RULE_FIELDS = {
   acc:{name:"Счёт или касса", list:()=>[...DB.accounts,...DB.cashboxes]},
   dept:{name:"Подразделение", list:()=>DB.depts, tree:true},
   cf:{name:"Тип расхода CF", list:()=>DB.cfTypes},
-  zone:{name:"Зона ответственности", list:()=>DB.zones},
   cpty:{name:"Контрагент", text:true},
 };
+/* ДР-02, ДР-03: «Зона ответственности» исключена из условий; старое правило с ней не применяется до перенастройки */
+const LEGACY_RULE_FIELDS = {zone:{name:"Зона ответственности", list:()=>DB.zones}};
+const ruleNeedsFix = r => (r.conds||[]).some(c=>!RULE_FIELDS[c.field]);
 const RULE_OPS = {eq:"Равно", ne:"Не равно", in:"В списке", group:"В группе"};
 function deptInGroup(d, groupId){ let x = dept(d), n=0; while(x && n<20){ if(x.id===groupId) return true; x = dept(x.parent); n++; } return false; }
 function condResult(c, ctx){
@@ -406,6 +409,7 @@ function matchRule(ctx, date){
   const trace = [];
   for(const r of DB.rules){
     if(!r.active){ trace.push({r, ok:false, why:"выключено"}); continue; }
+    if(ruleNeedsFix(r)){ trace.push({r, ok:false, why:"требует перенастройки: условие по зоне ответственности не применяется (ДР-03)"}); continue; }
     const w = wal(r.wallet);
     if(!w){ trace.push({r, ok:false, why:"не задан целевой кошелёк"}); continue; }
     if(walletClosedAt(w, date)){ trace.push({r, ok:false, why:"целевой кошелёк закрыт"}); continue; }
@@ -439,9 +443,14 @@ let VF_CACHE = {}, NF_CACHE = {};
 function inval(){ FACTS = null; RATE_IDX = null; VIS_CACHE = {}; RECON = null; VF_CACHE = {}; NF_CACHE = {}; }
 
 /** Участвует ли документ в расчёте (ТР-07, ТР-08, ТР-72, ТР-74) */
-/* ТР-107: у документа ровно одно состояние; при нескольких основаниях берётся строка выше */
-const STATE_NAMES = {deleted:"Помечен на удаление", notposted:"Не проведён", posted:"Проведён"};   // ТР-14 v1.5.1: статуса «Исключён» нет
+/* ДР-04: три состояния; «Нет данных» — признаки ERP не получены (не предполагаемое состояние).
+   Состояние, признаки, полноту данных и участие в расчёте считает сервер (d.ev); ниже — запасной расчёт для ручного ввода до сохранения */
+const STATE_NAMES = {deleted:"Помечен на удаление", notposted:"Не проведён", posted:"Проведён", nodata:"Нет данных"};
+const FLAG_NAMES = {posted:"Проведён", approved:"Согласован", deleted:"Помечен на удаление", bank:"Проведено банком", bankDate:"Дата проведения банком"};
+const triText = v => v===true ? "Да" : v===false ? "Нет" : "Нет данных";
+const DUP_PENDING = new Set(["nomatch","ambiguous","lost"]);
 function docState(d){
+  if(d.ev) return d.ev.st;
   if(d.deleted || d.status==="Помечен на удаление") return "deleted";
   if(d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate) return "deleted";   // ТР-72; «Исключён» — только отсутствие в файле
   if(d.excluded) return "notposted";   // нет в последней загрузке своего периода (ТР-62)
@@ -449,22 +458,37 @@ function docState(d){
   return "posted";
 }
 function docCounts(d){
+  if(d.ev) return d.ev.counts;
   if(docState(d)!=="posted") return false;
   if(DB.settings.startDate && d.date < DB.settings.startDate) return false;
   return true;
 }
-/** Метка «Не исполнен банком»: только проведённый СБДС без даты проведения банком (ТР-09, ТР-107) */
-const notBankDone = d => d.type==="СБДС" && docState(d)==="posted" && !d.bankDate;
-const needsReview = d => !!d.review;
+/** Метка «Не исполнен банком»: учитываемый СБДС, по которому нет подтверждённого исполнения банком (ТР-09, ДР-05) */
+const notBankDone = d => d.type==="СБДС" && docCounts(d) && (d.ev ? d.ev.kf===FAR : !d.bankDate);
+/** ДР-08: служебная отметка «Требует проверки» — существенные изменения ERP (ТР-85), противоречие признаков (ДР-05) или двойной учёт (ДР-01) */
+const dupPending = d => !!(d.dupInfo && DUP_PENDING.has(d.dupInfo.st) && docState(d)==="posted" && !d.excluded);
+const needsReview = d => !!d.review || !!(d.ev && d.ev.conflict && !d.excluded) || dupPending(d);
+/** ДР-07: признаки ERP не получены — отдельная отметка «Нет данных» с перечнем */
+const missingData = d => d.ev && !d.excluded && d.source==="file" ? d.ev.missing : [];
+function reviewReasons(d){
+  const out = [];
+  if(d.review) out.push("существенные изменения в ERP (ТР-85)");
+  if(d.ev && d.ev.conflict) out.push("противоречие признаков: " + d.ev.conflict);
+  if(dupPending(d)) out.push(d.dupInfo.res + " (ТР-70)");
+  return out;
+}
 /** Что считать в расчёте: удержанное прежнее движение до проверки казначеем (ТР-85) или текущее */
 function docMovement(d){ if(d.held) return [Object.assign({}, d, d.held, {id:d.id, type:d.type}), !!d.held.counted]; return [d, docCounts(d)]; }
 function docStateTag(d){
   const st = docState(d);
   const why = d.excluded ? "нет в последней загрузке его периода (ТР-62)" : d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate ? `заменён данными 1С с ${fmtD(DB.settings.switchDate)} (ТР-72)` : "";
-  let h = st==="posted" ? `<span class="tag ok">Проведён</span>` : st==="notposted" && d.excluded ? `<span class="tag" title="${esc(why)}">Не проведён: нет в загрузке</span>` : st==="notposted" ? `<span class="tag">Не проведён${d.statusRaw?`: <span class="notr">${esc(d.statusRaw)}</span>`:d.status&&d.status!=="Не проведён"?`: ${esc(d.status.toLowerCase())}`:""}</span>`
+  let h = st==="nodata" ? `<span class="tag" title="Признаки ERP не получены — документ не считается проведённым (ДР-07)">Нет данных</span>` : st==="posted" ? `<span class="tag ok">Проведён</span>` : st==="notposted" && d.excluded ? `<span class="tag" title="${esc(why)}">Не проведён: нет в загрузке</span>` : st==="notposted" ? `<span class="tag">Не проведён${d.statusRaw?`: <span class="notr">${esc(d.statusRaw)}</span>`:d.status&&d.status!=="Не проведён"?`: ${esc(d.status.toLowerCase())}`:""}</span>`
     : st==="excluded" ? `<span class="tag" title="${esc(why)}">Исключён</span>` : `<span class="tag off" ${why?`title="${esc(why)}"`:""}>Помечен на удаление${d.source==="manual"&&!d.deleted&&why?" · заменён данными 1С":""}</span>`;
   if(DB.settings.startDate && d.date < DB.settings.startDate && st==="posted") h += ` <span class="tag warn">до начала учёта</span>`;
-  if(needsReview(d)) h += ` <span class="tag warn">Требует проверки</span>`;
+  if(needsReview(d)) h += ` <span class="tag warn" title="${esc(reviewReasons(d).join("; "))}">Требует проверки</span>`;
+  const miss = missingData(d);
+  if(miss.length && st!=="nodata") h += ` <span class="tag" title="Не получено из ERP (ДР-07)">Нет данных: ${esc(miss.map(k=>FLAG_NAMES[k].toLowerCase()).join(", "))}</span>`;
+  if(d.dupInfo && d.dupInfo.st==="matched" && st==="posted") h += ` <span class="tag info" title="${esc(d.dupInfo.res)}">Введён вручную</span>`;
   if(notBankDone(d)) h += ` <span class="tag warn">Не исполнен банком</span>`;
   return h;
 }
@@ -507,7 +531,7 @@ function facts(){
     }
     const sg = DOC_TYPES[d.type].sign; const a = acc(d.acc);
     let dd = d.date, kp = d.date; const sbds = d.type==="СБДС";
-    if(sbds){ const bank = d0_.bankDate||""; dd = bank ? (bank > d.date ? bank : d.date) : FAR;
+    if(sbds){ if(d0_.ev) dd = d0_.ev.kf; else { const bank = d0_.bankDate||""; dd = bank ? (bank > d.date ? bank : d.date) : FAR; }
       const c = d0_.sentConf; kp = c ? (dd < (c > d.date ? c : d.date) ? dd : (c > d.date ? c : d.date)) : dd; }
     d.lines.forEach((l,i)=>{
       const lu = isFinite(l.usd) && l.usd!==null ? l.usd : toUSD(l.sum, d.cur, d.date);
@@ -590,7 +614,7 @@ function diffText(before, after){
 function docSnap(d){
   if(d.type==="ПЕР") return {дата:d.date, сумма:`${fmtIn(d.from.sum)} → ${fmtIn(d.to.sum)}`, кошелёк:`${nm(wal(d.from.wallet))} → ${nm(wal(d.to.wallet))}`, статус:d.deleted?"помечен":d.status};
   return {дата:d.date, сумма:fmtIn(r2(d.lines.reduce((s,l)=>s+l.sum,0))), кошелёк:[...new Set(d.lines.map(l=>l.wallet?nm(wal(l.wallet)):"без кошелька"))].join(", "),
-    статус: d.excluded ? "исключён" : d.deleted ? "помечен на удаление" : d.status + (d.type==="СБДС" && d.approved===false ? ", не согласован" : "")};
+    статус: d.excluded ? "нет в загрузке" : STATE_NAMES[docState(d)].toLowerCase()};
 }
 function opSnap(o){ const L = opLegs(o); return {дата:o.date, вид:OP_KINDS[o.kind].name, сумма:L.map(l=>`${fmtIn(l.sum)} ${curCode(l.cur)}`).join(" / "),
   кошелёк:`${nm(wal(o.from))} → ${nm(wal(o.to))}`, статус: o.deleted?"помечена на удаление":o.posted?"проведена":"черновик"}; }

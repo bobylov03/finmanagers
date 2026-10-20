@@ -10,7 +10,7 @@ v3.1: Кф — фактический расчётный остаток коше
 from datetime import date, datetime, timedelta, timezone
 
 from .logic import (acc_curs, cur_code, descendants, doc_movement, has, hidden_allowed, is_admin, nm, own_wallets, pos_facts, rate_at,
-                    treasurers_of, in_closed, visible_wallets)
+                    treasurers_of, in_closed, visible_wallets, doc_eval, FAR)
 from .util import fmt, fmt_d, now_iso, r2
 
 OP_NAMES = {"loan": "Выдача займа", "repay": "Погашение займа", "funding": "Финансирование", "dividends": "Дивиденды", "exchange": "Обмен", "closeDiv": "Дивиденды"}
@@ -173,8 +173,8 @@ def p_candidates(C, pos, d):
         mv, counted = doc_movement(C, doc)
         if not counted or mv.get("acc") != pos["acc"] or (mv.get("cur") or "") != pos["cur"] or mv["date"] > lim:
             continue
-        bd = doc.get("bankDate") or ""
-        if bd and bd < d:
+        kf = doc_eval(C, doc)["kf"]   # ДР-09: исполненный банком (признак «Да» и дата) до D — уже в Кф, не в Писх
+        if kf != FAR and kf < d:
             continue
         out.append({"doc": doc["id"], "no": doc.get("no1c") or doc.get("no"), "date": mv["date"], "sum": r2(sum(l.get("sum") or 0 for l in mv["lines"])),
                     "cpty": ", ".join(dict.fromkeys(l.get("cpty") for l in doc.get("lines") or [] if l.get("cpty")))})
@@ -442,7 +442,8 @@ def morning_view(C, u, d, mode="morning"):
         a = C.acc(pos["acc"])
         rate = rate_usd(C, pos["cur"], d)
         rep, row = morning_row(C, pos["id"], d)
-        it = {"pos": pos["id"], "acc": pos["acc"], "org": a and a["org"], "cur": pos["cur"], "owner": pos.get("owner"), "rate": rate}
+        it = {"pos": pos["id"], "acc": pos["acc"], "org": a and a["org"], "cur": pos["cur"], "owner": pos.get("owner"), "rate": rate,
+              "bank": (a or {}).get("bank") or "", "cash": bool(a and a.get("kind") == "Касса")}   # ДР-12: фильтр по банку
         if row and not row.get("noAccess"):
             b, p, cb, cp = effective(C, row, pos["id"], d)
             # ТР-96: USD — по курсу, зафиксированному в снимке при сдаче; поздние правки курсов его не меняют
@@ -465,7 +466,9 @@ def morning_view(C, u, d, mode="morning"):
     name = lambda o: nm(C.get("users", o))
     return {"date": d, "mode": mode, "workday": wd, "rows": rows,
             "header": {"total": len(owners), "submitted": len(sub), "late": [name(o) for o in late], "overdue": [name(o) for o in overdue],
-                       "pending": [name(o) for o in pending], "deadline": deadline(C, d).isoformat()}}
+                       "pending": [name(o) for o in pending], "deadline": deadline(C, d).isoformat(),
+                       # ДР-12: идентификаторы — чтобы при фильтре по банку и казначею пересчитать статусы сдачи по отобранным позициям
+                       "ids": {"owners": owners, "sub": sub, "late": late, "overdue": overdue, "pending": pending}}}
 
 
 def history(C, u, pid):

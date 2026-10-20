@@ -7,7 +7,7 @@
    Все данные приходят с сервера уже отфильтрованными по правам (ТР-104).
    ============================================================ */
 const DBV = {date:"", my:null, morning:null, cmpView:null, recon:null, loading:{}, ver:{},
-  mode:"morning", state:"submit", cmp:"", flat:false, org:"", cur:"", q:"", st:"", open:{}, data:null, saveT:null, savedAt:"", saveErr:""};
+  mode:"morning", state:"submit", cmp:"", flat:false, org:"", cur:"", bank:"", owner:"", q:"", st:"", open:{}, data:null, saveT:null, savedAt:"", saveErr:""};
 const DB_ST = {ok:["Сходится","ok"], diff:["Расхождение","off"], noreport:["Нет отчёта","warn"], noaccess:["Нет доступа к банку","warn"], explained:["Объяснено","info"]};
 const fmtT = t => t ? `${fmtD(t.slice(0,10))} ${t.slice(11,16)}` : "—";
 const hm = t => t ? t.slice(11,16) : "";
@@ -207,11 +207,21 @@ function viewDbMorning(){
   const v = dbNeed("morning"); if(!v) return dbLoadingHtml(T);
   const H = v.header; const cmp = DBV.cmp && DBV.cmpView && DBV.cmpView.date===DBV.cmp ? DBV.cmpView : null;
   const cmpMap = {}; if(cmp) cmp.rows.forEach(r=>cmpMap[r.pos]=r);
+  const bankOf = r => r.cash ? "__cash" : (r.bank || "__none");
   let rows = v.rows.filter(r=>(!DBV.org || r.org===DBV.org) && (!DBV.cur || r.cur===DBV.cur) && (!DBV.q || norm(nm(acc(r.acc))+" "+nm(org(r.org))).includes(norm(DBV.q))))
+    .filter(r=>!DBV.bank || bankOf(r)===DBV.bank)                               // ДР-12: банк
+    .filter(r=>!DBV.owner || (DBV.owner==="__none" ? !r.owner : r.owner===DBV.owner))   // ДР-12: ответственный казначей
     .filter(r=>!DBV.st || (DBV.st==="stale" ? r.stale : DBV.st==="noaccess" ? r.noAccess : DBV.st==="ok" ? !r.stale : true));
+  // ДР-12: при отборе по банку или казначею статусы сдачи считаются по казначеям отобранных позиций
+  let HH = H;
+  if((DBV.bank || DBV.owner) && H.ids){ const own = new Set(rows.map(r=>r.owner).filter(Boolean)); const I = H.ids; const nmU = id => nm(usr(id));
+    HH = Object.assign({}, H, {total: I.owners.filter(o=>own.has(o)).length, submitted: I.sub.filter(o=>own.has(o)).length,
+      late: I.late.filter(o=>own.has(o)).map(nmU), overdue: I.overdue.filter(o=>own.has(o)).map(nmU), pending: I.pending.filter(o=>own.has(o)).map(nmU)}); }
   rows.sort((a,b)=>(nm(org(a.org))+nm(acc(a.acc))).localeCompare(nm(org(b.org))+nm(acc(b.acc)),"ru"));
   const curs = [...new Set(rows.map(r=>r.cur))].sort((a,b)=>curCode(a).localeCompare(curCode(b)));
   const orgs = [...new Set(v.rows.map(r=>r.org))]; const allCurs = [...new Set(v.rows.map(r=>r.cur))];
+  const banks = [...new Set(v.rows.map(bankOf))].sort((a,b)=>a.startsWith("__")-b.startsWith("__") || a.localeCompare(b,"ru"));
+  const owners = [...new Set(v.rows.map(r=>r.owner||"__none"))].sort((a,b)=>(a==="__none")-(b==="__none") || nm(usr(a)).localeCompare(nm(usr(b)),"ru"));
   const cell = r => {
     if(!r) return "";
     const c = cmpMap[r.pos]; const delta = c && r.b!=null && c.b!=null ? r2(r.b-c.b) : null;
@@ -221,11 +231,12 @@ function viewDbMorning(){
   };
   let table;
   if(DBV.flat){
-    table = `<table id="tDbM" class="sortable"><thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th class="num">Б</th>${cmp?`<th class="num">Б на ${fmtD(DBV.cmp)}</th><th class="num">Изменение</th>`:""}<th>Источник</th><th>Ответственный</th><th class="num">Курс</th><th class="num">USD</th></tr></thead>
+    table = `<table id="tDbM" class="sortable"><thead><tr><th>Организация</th><th>Счёт или касса</th><th>Вал.</th><th class="num">Б</th>${cmp?`<th class="num">Б на ${fmtD(DBV.cmp)}</th><th class="num">Изменение</th>`:""}<th>Банк</th><th>Источник</th><th>Ответственный</th><th class="num">Курс</th><th class="num">USD</th></tr></thead>
     <tbody>${rows.map(r=>{ const c = cmpMap[r.pos]; return `<tr><td>${esc(nm(org(r.org)))}</td><td>${esc(nm(acc(r.acc)))}</td><td>${esc(curCode(r.cur))}</td><td class="num">${cell(r)}</td>
       ${cmp?`<td class="num">${c&&c.b!=null?fmt(c.b):"—"}</td><td class="num">${c&&c.b!=null&&r.b!=null?fmtS(r2(r.b-c.b)):"—"}</td>`:""}
+      <td>${r.cash?`<span class="muted">касса</span>`:esc(r.bank||"—")}</td>
       <td>${r.noAccess?`<span class="tag warn">нет доступа</span>`:r.stale?`<span class="tag warn">не сдан</span>`:r.src==="morning"?`утро ${hm(r.t)}${r.late?` <span class="tag off">опоздание</span>`:""}`:`обновление ${hm(r.t)}`}${r.corrected?` <span class="tag info">испр.</span>`:""}</td>
-      <td>${esc(r.owner?nm(usr(r.owner)):"—")}</td><td class="num">${r.rate?fmtRate(r.rate):"—"}</td><td class="num">${r.usd!=null?fmt(r.usd):"—"}</td></tr>`; }).join("") || `<tr><td colspan="10" class="muted">Нет позиций</td></tr>`}</tbody></table>`;
+      <td>${esc(r.owner?nm(usr(r.owner)):"—")}</td><td class="num">${r.rate?fmtRate(r.rate):"—"}</td><td class="num">${r.usd!=null?fmt(r.usd):"—"}</td></tr>`; }).join("") || `<tr><td colspan="11" class="muted">Нет позиций</td></tr>`}</tbody></table>`;
   } else {
     const byOrg = {}; rows.forEach(r=>{ ((byOrg[r.org]=byOrg[r.org]||{})[r.acc]=byOrg[r.org][r.acc]||{})[r.cur] = r; });
     const usdSum = list => r2(list.reduce((t,r)=>t+(r&&r.usd!=null?r.usd:0),0));
@@ -243,16 +254,18 @@ function viewDbMorning(){
   return `<h1>${T} <span class="tzref">ТР-99</span></h1>
   <p class="lede">Банковские остатки по позициям на утро рабочего дня: организация → счёт в строках, валюты в столбцах, итоги в USD. Если отчёт не сдан или нет доступа к банку — показан последний остаток с датой, выделен цветом. Скорректированный остаток помечен «испр.», исходный — по наведению. Клик по сумме — история позиции.</p>
   <div class="db-head">
-    <div><span>Сдали</span><b>${H.submitted} из ${H.total}</b></div>
-    <div class="${H.late.length?"warn":""}"><span>С опозданием</span><b>${H.late.length?esc(H.late.join(", ")):"—"}</b></div>
-    <div class="${H.overdue.length?"bad":""}"><span>Просрочили</span><b>${H.overdue.length?esc(H.overdue.join(", ")):"—"}</b></div>
-    <div><span>Ожидается до ${hm(H.deadline)} МСК</span><b>${H.pending.length?esc(H.pending.join(", ")):"—"}</b></div>
+    <div><span>Сдали${HH!==H?" (по отбору)":""}</span><b>${HH.submitted} из ${HH.total}</b></div>
+    <div class="${HH.late.length?"warn":""}"><span>С опозданием</span><b>${HH.late.length?esc(HH.late.join(", ")):"—"}</b></div>
+    <div class="${HH.overdue.length?"bad":""}"><span>Просрочили</span><b>${HH.overdue.length?esc(HH.overdue.join(", ")):"—"}</b></div>
+    <div><span>Ожидается до ${hm(H.deadline)} МСК</span><b>${HH.pending.length?esc(HH.pending.join(", ")):"—"}</b></div>
   </div>
   ${!v.workday?`<div class="alert info">${fmtD(v.date)} — нерабочий день; показаны последние сданные остатки.</div>`:""}
   ${dbDateBar(`<div class="fld"><span>Показать</span><div class="seg">${[["morning","На утро"],["latest","Последнее обновление"]].map(([k,t])=>`<button type="button" class="${DBV.mode===k?"on":""}" onclick="DBV.mode='${k}';render()">${t}</button>`).join("")}</div></div>
     <label class="fld"><span>Сравнить с датой</span><input type="date" value="${DBV.cmp}" onchange="DBV.cmp=this.value;DBV.cmpView=null;dbLoad('morning',true)"></label>
     <label class="fld"><span>Организация</span><select onchange="DBV.org=this.value;render()">${opts(orgs.map(o=>org(o)).filter(Boolean), DBV.org, {empty:"Все"})}</select></label>
     <label class="fld"><span>Валюта</span><select onchange="DBV.cur=this.value;render()">${opts(allCurs.map(c=>({id:c, name:curCode(c)})), DBV.cur, {empty:"Все"})}</select></label>
+    <label class="fld"><span>Банк</span><select onchange="DBV.bank=this.value;render()"><option value="">Все</option>${banks.map(b=>`<option value="${esc(b)}" ${DBV.bank===b?"selected":""}>${b==="__cash"?"Кассы":b==="__none"?"Банк не указан":esc(b)}</option>`).join("")}</select></label>
+    <label class="fld"><span>Казначей</span><select onchange="DBV.owner=this.value;render()"><option value="">Все</option>${owners.map(o=>`<option value="${o}" ${DBV.owner===o?"selected":""}>${o==="__none"?"Не назначен":esc(nm(usr(o)))}</option>`).join("")}</select></label>
     <label class="fld"><span>Состояние</span><select onchange="DBV.st=this.value;render()"><option value="">Все</option>${[["ok","Сдано"],["stale","Не сдано / последний остаток"],["noaccess","Нет доступа к банку"]].map(([k,t])=>`<option value="${k}" ${DBV.st===k?"selected":""}>${t}</option>`).join("")}</select></label>
     <label class="fld"><span>Поиск</span><input type="search" value="${esc(DBV.q)}" placeholder="счёт или организация" onchange="DBV.q=this.value;render()"></label>`)}
   <div class="panel"><header><div class="seg">${[[false,"По организациям"],[true,"Плоский список"]].map(([k,t])=>`<button type="button" class="${DBV.flat===k?"on":""}" onclick="DBV.flat=${k};render()">${t}</button>`).join("")}</div>

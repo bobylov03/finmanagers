@@ -50,7 +50,7 @@ REF_KINDS = {
 REF_ORDER = ["currencies", "rates", "orgs", "accounts", "cashboxes", "cfTypes", "depts", "zones"]
 BAL_SPEC = {"date": ["Дата"], "acc": ["Счёт или касса", "Счет или касса", "Счёт", "Счет", "Касса", "Банковский счёт"], "cur": ["Валюта"],
             "sum": ["Остаток", "Остаток в валюте", "Сумма"]}
-KIND_NAMES = {"exp": "Документы 1С", "ref": "Справочники и курсы", "bal": "Остатки 1С"}
+KIND_NAMES = {"exp": "Документы 1С", "ref": "Справочники и курсы", "bal": "Остатки 1С", "flags": "Признаки документов ERP"}
 
 
 def _match(row, spec):
@@ -121,8 +121,50 @@ def norm_bool(v):
     return v is True or norm(v) in ("да", "1", "true", "истина", "x", "yes", "проведено")
 
 
+TRUE_W = {"да", "1", "true", "истина", "x", "yes", "проведено", "проведён", "проведен", "согласован", "исполнен", "помечен", "помеченнаудаление"}
+FALSE_W = {"нет", "0", "false", "ложь", "no", "непроведено", "непроведён", "непроведен", "несогласован", "неисполнен", "распроведён", "распроведен", "непомечен"}
+
+
+def tri(v):
+    """Признак ERP: True / False / None (пусто — «Нет данных», ДР-05). Неизвестное значение — ValueError."""
+    if v is True or v is False:
+        return v
+    if v is None or txt(v) == "" or norm(v) in ("нетданных", "—", "-"):
+        return None
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return bool(v)
+    k = norm(v)
+    if k in TRUE_W:
+        return True
+    if k in FALSE_W:
+        return False
+    raise ValueError(txt(v))
+
+
+def status_flags(v):
+    """«Статус» / «Проведён» ERP → (проведён, помечен на удаление). Распроведённый — «Не проведён» (ДР-04)."""
+    if v is None or txt(v) == "":
+        return None, None
+    k = norm(v)
+    if "удален" in k or "удалён" in k:
+        return False, True
+    if "распровед" in k or "непровед" in k or k in FALSE_W:
+        return False, False
+    if "провед" in k or k in TRUE_W:
+        return True, False
+    raise ValueError(txt(v))
+
+
+def flags_fill(C, guid, f):
+    """Признаки из файла дополняются последними признаками ERP, полученными отдельно по GUID (ДР-05, ДР-06)."""
+    x = C.get("erpFlags", guid) if guid else None
+    base = (x or {}).get("flags") or {}
+    return {k: (f.get(k) if f.get(k) is not None else base.get(k)) for k in ("posted", "approved", "deleted", "bank")}
+
+
 def doc_sig(d):
-    return json.dumps([d["type"], d["op"], d["no1c"], d["date"], d["org"], d["acc"], d["cur"], d["status"], d.get("approved") is not False, d["bankDone"],
+    fl = d.get("flagsFile") or {}   # признаки из самого файла; полученные отдельной загрузкой не делают файл «изменённым»
+    return json.dumps([d["type"], d["op"], d["no1c"], d["date"], d["org"], d["acc"], d["cur"], d["status"] if d.get("fmt") != "erp17" else "", [fl.get(k) for k in ("posted", "approved", "deleted", "bank")],
                        d.get("bankDate") or "", d.get("stage") or "", d.get("erpType") or "", d.get("docSum"), d.get("rate"),
                        d.get("bankName") or "", d.get("accNo") or "",
                        [[l["sum"], l["usd"], l.get("fileWallet") or "", l["dept"], l["cf"], l["zone"], l["cpty"], l["contract"], l["purpose"]]
@@ -166,9 +208,15 @@ HIST17_SPEC = {
     "org": ["Организация"], "bank": ["Банк"], "accNo": ["Р/сч", "Р/с", "Расчётный счёт", "Расчетный счет", "Номер счёта"], "cur": ["Валюта"],
     "docSum": ["Сумма в валюте документа"], "rate": ["Курс"], "bankDate": ["Дата проведения банком"], "op": ["Хозяйственная операция"],
     "erpType": ["Тип документа ERP"],
-    # ТР-91: признаки состояния, если ERP передаст их в том же файле (необязательные колонки)
-    "status": ["Статус", "Состояние"], "approved": ["Согласован"], "deletedMark": ["Помечен на удаление", "Пометка удаления"],
+    # ТР-91, ДР-05: признаки ERP, если они переданы в том же файле (необязательные колонки); иначе — отдельная загрузка признаков по GUID
+    "status": ["Статус", "Состояние", "Проведён", "Проведен"], "approved": ["Согласован"], "deletedMark": ["Помечен на удаление", "Пометка удаления"],
+    "bankDone": ["Проведено банком", "Признак проведено банком", "Исполнен банком"],
 }
+# ДР-05…07: отдельная загрузка признаков документов ERP по GUID (до интеграции с ERP — файлом)
+FLAGS_SPEC = {"guid": ["GUID документа (ERP)", "GUID документа ERP", "GUID ERP", "GUID документа", "GUID"],
+              "posted": ["Проведён", "Проведен", "Статус", "Состояние проведения"], "approved": ["Согласован"],
+              "deleted": ["Помечен на удаление", "Пометка удаления"], "bank": ["Проведено банком", "Признак проведено банком", "Исполнен банком"]}
+FLAGS_HEAD = ["GUID документа (ERP)", "Проведён", "Согласован", "Помечен на удаление", "Проведено банком"]
 HIST17_REQ = ["guid", "no", "date", "org", "accNo", "cur", "docSum"]
 HIST17_HEAD = ["GUID документа (ERP)", "Номер документа (ERP)", "Дата документа (ERP)", "Сумма (USD)", "Тип расхода CF", "Подразделение", "Заметки",
                "Получатель", "Организация", "Банк", "Р/сч", "Валюта", "Сумма в валюте документа", "Курс", "Дата проведения банком",
@@ -178,6 +226,7 @@ FIELD_NAMES = {"guid": "GUID", "accNo": "Р/сч", "bank": "банк", "type": "
                "sum": "сумма", "usd": "сумма USD", "docSum": "сумма документа", "rate": "курс", "dept": "подразделение", "cf": "тип расхода CF",
                "zone": "зона", "cpty": "получатель", "contract": "договор", "purpose": "назначение", "erpType": "тип документа ERP", "wallet": "кошелёк"}
 REF_FIELDS = {"org": "orgs", "acc": "accs", "cur": "currencies", "dept": "depts", "cf": "cfTypes", "zone": "zones"}
+NO_FIX = ("bankDate", "status", "approved", "deletedMark", "bankDone", "bank")   # ДР-05: признаки ERP и дата проведения банком — только из ERP
 SIGNIFICANT = ("counted", "date", "org", "acc", "cur", "sum", "dept", "cf", "zone", "cpty")   # ТР-85: влияют на движение и распределение
 
 
@@ -318,7 +367,7 @@ def preview_exp(C, p):
         if first_txt.startswith("итого") or first_txt.startswith("всего"):
             continue   # строка итогов отчёта ERP
         n = hi + 2 + i
-        fx = fixes.get(str(n)) or {}
+        fx = {k: v for k, v in (fixes.get(str(n)) or {}).items() if k not in NO_FIX}   # ДР-05: признаки и дата банка ERP не правятся
         raw = {k: (fx[k] if k in fx else cell(r, m, k)) for k in SPEC}
         g = lambda k: raw.get(k)
         R = {"n": n, "fmt": fmt_, "fixed": sorted(k for k in fx if k in SPEC), "raw": {k: ("" if v is None else str(v)) for k, v in raw.items()},
@@ -371,11 +420,21 @@ def preview_exp(C, p):
         elif math.isfinite(R["sum"]) and R["sum"] <= 0: E("сумма должна быть больше нуля", "docSum" if fmt_ == "erp17" else "sum")
         # состояние (ТР-106 / ТР-07)
         if fmt_ == "erp17":
-            # ТР-91: признаков в 17 полях нет — документ отчёта учитывается как проведённый и согласованный, если ERP не передала иное
-            R["status"], R["approved"] = "Проведён", True
-            if txt(g("status")): R["status"] = norm_status(g("status")) or "Проведён"
-            if txt(g("approved")): R["approved"] = norm_bool(g("approved"))
-            if txt(g("deletedMark")) and norm_bool(g("deletedMark")): R["status"] = "Помечен на удаление"
+            # ДР-06, ДР-07: признаков в 17 полях нет — документ не считается проведённым; признаки — из колонок файла, если они есть,
+            # или из отдельной загрузки признаков ERP по GUID. Не полученный признак — «Нет данных»
+            fl = {}
+            try:
+                fl["posted"], dm = status_flags(g("status"))
+            except ValueError as ex:
+                E(f"неизвестное значение «{ex}» в колонке «Статус» — ожидается Проведён / Не проведён / Помечен на удаление", "status"); fl["posted"], dm = None, None
+            for k, col in (("approved", "approved"), ("deleted", "deletedMark"), ("bank", "bankDone")):
+                try:
+                    fl[k] = tri(g(col))
+                except ValueError as ex:
+                    E(f"неизвестное значение «{ex}» в колонке «{HIST17_SPEC[col][0]}» — ожидается Да / Нет", col); fl[k] = None
+            if dm:
+                fl["deleted"] = True
+            R["flagsFile"] = fl
             R["docSum"] = _num(g("docSum"))
             if not math.isfinite(R["docSum"]): E("пустая или неверная сумма в валюте документа", "docSum")
             rr = _num(g("rate"))
@@ -387,6 +446,8 @@ def preview_exp(C, p):
             R["usdRaw"] = g("usd")
         elif fmt_ == "hist":
             R["status"], R["approved"], unk = map_state(C, g("stage"), g("state"))
+            # прежний формат: признаки — из таблицы соответствия (ДР-06 — только для прежних форматов); исполнения банком в нём нет
+            R["flagsFile"] = {"posted": R["status"] == "Проведён", "approved": bool(R["approved"]), "deleted": R["status"] == "Помечен на удаление", "bank": None}
             for x in unk:   # ТР-106: значение не задано в таблице соответствия — загрузка блокируется до сопоставления
                 unmapped.add(x)
                 E(f"значение «{x}» не задано в таблице соответствия состояний ERP (ТР-106)", "state")
@@ -403,7 +464,19 @@ def preview_exp(C, p):
         else:
             R["status"] = norm_status(g("status"))
             R["approved"] = True if txt(g("approved")) == "" else norm_bool(g("approved"))
+            fl = {"posted": R["status"] == "Проведён", "deleted": R["status"] == "Помечен на удаление", "approved": None, "bank": None}
+            for k, col in (("approved", "approved"), ("bank", "bank")):
+                try:
+                    fl[k] = tri(g(col))
+                except ValueError as ex:
+                    E(f"неизвестное значение «{ex}» в колонке «{EXP_SPEC[col][0]}» — ожидается Да / Нет", col)
+            R["flagsFile"] = fl
             R["docSum"] = float("nan"); R["rate"] = None; R["usdRaw"] = g("usd")
+        R["flags"] = flags_fill(C, R["guid"], R.get("flagsFile") or {})
+        if fmt_ == "erp17":
+            f_ = R["flags"]
+            R["status"] = "Помечен на удаление" if f_["deleted"] else "Проведён" if f_["posted"] else "Не проведён" if f_["posted"] is False else ""
+            R["approved"] = f_["approved"]
         R["usd"] = None
         if R.get("usdRaw") not in (None, "") and txt(R["usdRaw"]) != "":
             R["usd"] = parse_num(R["usdRaw"])
@@ -432,7 +505,8 @@ def preview_exp(C, p):
         if R["guid"]:
             by_g.setdefault(R["guid"], []).append(R)
     for g_, lst in by_g.items():
-        h = lambda R: (R["type"], R["no"], R["date"], R["orgR"] and R["orgR"]["id"], R["accR"] and R["accR"]["id"], R["cur"], R["status"], R["approved"], R["op"],
+        h = lambda R: (R["type"], R["no"], R["date"], R["orgR"] and R["orgR"]["id"], R["accR"] and R["accR"]["id"], R["cur"], R["status"],
+                       json.dumps(R.get("flags"), sort_keys=True), R["op"],
                        R["bankDate"], None if not math.isfinite(R.get("docSum", float("nan"))) else R["docSum"])
         if len({h(R) for R in lst}) > 1:
             for R in lst:
@@ -488,18 +562,18 @@ def preview_exp(C, p):
         if R["type"] in ("ПБДС", "ПКО") and before_switch:
             R["st"], R["why"] = "skipped", "поступления до даты перехода на автообмен вводятся вручную (ТР-72)"
             skip_out.append({"row": R["n"], "guid": R["guid"], "why": R["why"]}); continue
-        if R["op"] and norm(R["op"]) in excl and before_switch:
-            R["st"], R["why"] = "skipped", f"хоз. операция «{R['op']}» введена вручную (ТР-70)"
-            skip70.append({"row": R["n"], "guid": R["guid"], "op": R["op"], "sum": R["sum"], "cur": R["cur"], "org": R["orgR"]["id"]}); continue
+        # ДР-01: вид хоз. операции — повод проверить двойной учёт, а не основание пропустить документ
+        R["ctl"] = bool(R["op"] and norm(R["op"]) in excl and before_switch)
         d = docs.get(R["guid"])
         if not d:
             d = {"guid": R["guid"], "source": "file", "fmt": R["fmt"], "type": R["type"], "op": R["op"], "no1c": R["no"], "date": R["date"], "date1c": "",
                  "org": R["orgR"]["id"], "acc": R["accR"]["id"], "cur": R["cur"], "status": R["status"], "statusRaw": R["stateRaw"], "stage": R["stage"],
-                 "erpType": R["erpType"], "approved": R["approved"] if R["type"] == "СБДС" else True,
-                 "bankDone": bool(R["bankDate"]) if R["type"] == "СБДС" else False,      # ТР-09: признак = дата заполнена
+                 "erpType": R["erpType"], "approved": R["flags"]["approved"] is True if R["type"] == "СБДС" else True,
+                 "flags": dict(R["flags"], v=1) if R["type"] == "СБДС" else dict(R["flags"], v=1, bank=None),   # ДР-05: «Проведено банком» — только у СБДС
+                 "bankDone": R["flags"]["bank"] is True if R["type"] == "СБДС" else False,   # ДР-05: отдельный признак, не по дате
                  "bankDate": (R["bankDate"] or "") if R["type"] == "СБДС" else "",
                  "docSum": r2(R["docSum"]) if math.isfinite(R.get("docSum", float("nan"))) else None, "rate": R.get("rate"), "lines": [], "_rows": [], "fixed": [],
-                 "bankName": R.get("bankName") or "", "accNo": R.get("accNo") or ""}
+                 "bankName": R.get("bankName") or "", "accNo": R.get("accNo") or "", "flagsFile": R.get("flagsFile") or {}}
             docs[R["guid"]] = d
         d["_rows"].append(R)
         d["fixed"] += [f for f in R["fixed"] if f in ("type", "op", "no", "date", "org", "acc", "cur", "stage", "state", "status", "bankDate", "docSum", "rate", "erpType", "guid")]
@@ -508,6 +582,18 @@ def preview_exp(C, p):
                            "fixed": [f for f in R["fixed"] if f in ("sum", "dept", "cf", "zone", "cpty", "purpose", "contract", "usd", "wallet")]})
     add, upd, same, exc, closed, signif = [], [], [], [], [], []
     existing = {d["guid"]: d for d in S["docs"] if d["source"] == "file"}
+    # ДР-01: сопоставление документов с контролируемыми хоз. операциями с ручными операциями
+    taken = {(e.get("dup") or {}).get("manual"): g_ for g_, e in existing.items() if (e.get("dup") or {}).get("manual")}
+    for d in sorted(docs.values(), key=lambda x: (x["date"], x["guid"])):
+        if any(R.get("ctl") for R in d["_rows"]):
+            d["dup"] = dup_result(C, d, existing.get(d["guid"]), {k for k, v in taken.items() if v != d["guid"]})
+            if d["dup"].get("manual"):
+                taken[d["dup"]["manual"]] = d["guid"]
+            skip70.append(dup_row(C, d))
+            for R in d["_rows"]:
+                R["dup"] = d["dup"]
+        else:
+            d["dup"] = None
     for d in docs.values():
         d["fixed"] = sorted(set(d["fixed"]))
         e = existing.get(d["guid"])
@@ -516,12 +602,14 @@ def preview_exp(C, p):
             add.append(d)
             for R in d["_rows"]: R["st"] = "new"
             if in_closed(C, d["date"]): closed.append(d["guid"])
-        elif e.get("fileSig") == d["sig"] and not e.get("excluded"):
+        elif e.get("fileSig") == d["sig"] and not e.get("excluded") and json.dumps(e.get("dup") or None, sort_keys=True) == json.dumps(d["dup"], sort_keys=True):
             same.append(d)
             for R in d["_rows"]: R["st"] = "same"
         else:
             upd.append((d, e))
             ch_doc = doc_changes(C, e, d)
+            if json.dumps(e.get("dup") or None, sort_keys=True) != json.dumps(d["dup"], sort_keys=True):
+                ch_doc.append({"f": "dup", "before": DUP_NAMES.get((e.get("dup") or {}).get("st"), "—"), "after": DUP_NAMES.get((d["dup"] or {}).get("st"), "—")})
             for i, R in enumerate(d["_rows"]):
                 R["st"] = "changed"
                 R["changes"] = (ch_doc if i == 0 else []) + line_changes(C, e["lines"][i] if i < len(e["lines"]) else None, d["lines"][i], i)
@@ -543,11 +631,69 @@ def preview_exp(C, p):
             registry.append({"n": None, "st": "excluded", "guid": e["guid"], "no": e.get("no1c"), "type": e["type"], "date": e["date"], "org": e["org"], "acc": e["acc"],
                              "cur": e["cur"], "sum": l.get("sum"), "dept": l.get("dept"), "cf": l.get("cf"), "cpty": l.get("cpty"), "purpose": l.get("purpose"),
                              "state": e.get("status"), "why": "документа нет в файле за выбранный период", "errs": [], "warns": [], "fixed": [], "raw": {}})
-    pv = {"format": fmt_, "errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [d["guid"] for d in add], "upd": [d["guid"] for d, _ in upd],
+    pv = {"format": fmt_, "errors": errors, "warns": warns, "skip70": [], "dup": skip70, "skipOut": skip_out, "add": [d["guid"] for d in add], "upd": [d["guid"] for d, _ in upd],
           "same": [d["guid"] for d in same], "closed": closed, "allOrgs": all_orgs, "rows": len(rows), "sel": sel, "registry": registry,
           "unmapped": sorted(unmapped), "significant": signif,
           "exc": [{"date": e["date"], "type": e["type"], "no1c": e["no1c"], "guid": e["guid"], "cur": e["cur"], "total": r2(sum(l["sum"] for l in e["lines"]))} for e in exc]}
     return pv, {"add": add, "upd": upd, "exc": exc, "same": same, "sel": sel, "rows": rows}
+
+
+DUP_DAYS = 3   # ДР-01: окно дат при сопоставлении с ручной операцией
+DUP_NAMES = {"matched": "Соответствие подтверждено — повторное движение не создаётся", "nomatch": "Ручной операции нет — на проверку казначею",
+             "ambiguous": "Соответствие неоднозначно — нужно подтверждение казначея", "accepted": "Казначей подтвердил: движение по документу",
+             "lost": "Сопоставленная ручная операция удалена — на проверку казначею"}
+
+
+def dup_candidates(C, d, taken):
+    """Ручные ПЕР с той же стороной списания: счёт, валюта, сумма и дата в пределах DUP_DAYS (ДР-01)."""
+    from datetime import date as _d
+    from .logic import doc_counts_manual
+    total = r2(sum(l.get("sum") or 0 for l in d["lines"]))
+    a = C.acc(d["acc"])
+    out = []
+    for m in C.S["docs"]:
+        if m.get("source") != "manual" or m["type"] != "ПЕР" or m["id"] in taken or not doc_counts_manual(C, m):
+            continue
+        fr = m.get("from") or {}
+        if fr.get("acc") != d["acc"] or (fr.get("cur") or (a or {}).get("cur")) != d["cur"] or not isinstance(fr.get("sum"), (int, float)):
+            continue
+        if abs(fr["sum"] - total) >= 0.005 or abs((_d.fromisoformat(m["date"]) - _d.fromisoformat(d["date"])).days) > DUP_DAYS:
+            continue
+        out.append(m)
+    return out
+
+
+def dup_result(C, d, e, taken):
+    """ДР-01: решение казначея сохраняется; иначе — по номеру документа ERP, затем по счёту, валюте, сумме и дате."""
+    prev = (e or {}).get("dup") or {}
+    if prev.get("by") == "treasurer":
+        return dict(prev)
+    from .logic import doc_counts_manual
+    no = norm(d.get("no1c"))
+    byid = [m for m in C.S["docs"] if no and m.get("source") == "manual" and m["type"] == "ПЕР" and norm(m.get("no1c")) == no
+            and m["id"] not in taken and doc_counts_manual(C, m)]
+    if len(byid) == 1:
+        return {"st": "matched", "manual": byid[0]["id"], "by": "id"}
+    c = dup_candidates(C, d, taken)
+    if len(c) == 1:
+        return {"st": "matched", "manual": c[0]["id"], "by": "auto"}
+    if not c:
+        return {"st": "nomatch"}
+    return {"st": "ambiguous", "cands": [m["id"] for m in c]}
+
+
+def dup_row(C, d):
+    x = d.get("dup") or {}
+    ids = [x["manual"]] if x.get("manual") else x.get("cands") or []
+    cands = []
+    for i in ids:
+        m = C.get("docs", i)
+        if m:
+            cands.append({"id": i, "no": m.get("no"), "no1c": m.get("no1c"), "date": m["date"], "sum": (m.get("from") or {}).get("sum"),
+                          "to": nm(C.acc((m.get("to") or {}).get("acc")))})
+    return {"guid": d["guid"], "no": d.get("no1c"), "type": d["type"], "date": d["date"], "op": d["op"], "acc": d["acc"], "cur": d["cur"],
+            "sum": r2(sum(l.get("sum") or 0 for l in d["lines"])), "st": x.get("st"), "by": x.get("by"), "res": DUP_NAMES.get(x.get("st"), ""), "cands": cands,
+            "row": d["_rows"][0]["n"] if d.get("_rows") else None}
 
 
 def reg_row(C, R):
@@ -558,7 +704,7 @@ def reg_row(C, R):
             "stateRaw": R.get("stateRaw"), "bankDate": R.get("bankDate"), "op": R["op"], "dept": R["dept"], "cf": R["cf"], "zone": R["zone"], "cpty": R["cpty"],
             "purpose": R["purpose"], "erpType": R.get("erpType"), "errs": R["errs"], "warns": R["warns"], "fixed": R["fixed"], "raw": R["raw"],
             "changes": R.get("changes", []), "fmt": R["fmt"], "orig": R.get("orig", {}), "mapped": R.get("mapped", []), "stateGuess": R.get("stateGuess", {}),
-            "bankName": R.get("bankName", ""), "accNo": R.get("accNo", ""), "usd": R.get("usd")}
+            "bankName": R.get("bankName", ""), "accNo": R.get("accNo", ""), "usd": R.get("usd"), "flags": R.get("flags"), "dup": R.get("dup")}
 
 
 def _show(C, f, v):
@@ -583,11 +729,16 @@ def _show(C, f, v):
 
 def doc_changes(C, e, d):
     out = []
+    from .logic import doc_flags, tri_text
     for f, k in (("type", "type"), ("op", "op"), ("no", "no1c"), ("date", "date"), ("org", "org"), ("acc", "acc"), ("cur", "cur"), ("state", "status"),
-                 ("approved", "approved"), ("bankDate", "bankDate"), ("erpType", "erpType"), ("stage", "stage"), ("docSum", "docSum"), ("rate", "rate")):
+                 ("bankDate", "bankDate"), ("erpType", "erpType"), ("stage", "stage"), ("docSum", "docSum"), ("rate", "rate")):
         a, b = e.get(k), d.get(k)
         if (a or None) != (b or None) and not (isinstance(a, float) and isinstance(b, float) and abs(a - b) < 1e-9):
             out.append({"f": f, "before": _show(C, k, a), "after": _show(C, k, b)})
+    fa, fb = doc_flags(e), doc_flags(d)
+    for k in ("posted", "approved", "deleted", "bank"):
+        if fa.get(k) != fb.get(k) and not (k == "bank" and d.get("type") != "СБДС"):
+            out.append({"f": "f_" + k, "before": tri_text(fa.get(k)), "after": tri_text(fb.get(k))})
     return out
 
 
@@ -662,7 +813,7 @@ def apply_exp(C, u, p, file_name):
     for n in work["add"]:
         d = dict(n, id=uid("D"), no="", excluded=False, deleted=False, versions=[], loaded=now, fileName=file_name, fileSig=n["sig"], author="", created=now,
                  held=None, review=None)
-        d.pop("sig", None); rows_ = d.pop("_rows", [])
+        d.pop("sig", None); d.pop("flagsFile", None); rows_ = d.pop("_rows", [])
         apply_rules(C, d)
         C.st.add("docs", d)
         closed_note(d, "новый документ")
@@ -681,7 +832,7 @@ def apply_exp(C, u, p, file_name):
             else:
                 lines.append(dict(l))
         for k in ("type", "op", "no1c", "date", "org", "acc", "cur", "status", "statusRaw", "approved", "bankDone", "bankDate", "stage", "erpType", "docSum", "rate", "fmt",
-                  "bankName", "accNo"):
+                  "bankName", "accNo", "flags", "dup"):
             e[k] = n.get(k)
         e.update(lines=lines, excluded=False, loaded=now, fileName=file_name, fileSig=n["sig"], fixed=n.get("fixed") or [])
         apply_rules(C, e)
@@ -695,6 +846,9 @@ def apply_exp(C, u, p, file_name):
             held_n += 1
         elif not significant and e.get("held"):
             e["review"] = dict(e.get("review") or {}, t=now, file=file_name, diff=significant_diff(C, e["held"], movement_snap(C, e)))
+        if e.get("held") and not would_count(C, e):
+            # ДР-07, ТР-85: отменённый, распроведённый или помеченный на удаление в ERP документ выходит из расчёта сразу — удержанное движение снимается
+            e["held"], e["review"] = None, None
         C.st.save("docs", e)
         after = doc_snap(C, e)
         add_version(C, "doc", e, before, after, src, u)
@@ -712,7 +866,8 @@ def apply_exp(C, u, p, file_name):
     C.st.add("exchangeLog", {"id": None, "t": now, "u": u["id"], "kind": KIND_NAMES["exp"] + (" (История согласования)" if pv["format"] == "hist" else ""), "file": file_name,
                              "added": len(work["add"]), "updated": len(work["upd"]), "excluded": len(work["exc"]), "errors": 0,
                              "text": f"Организации: {', '.join(nm(C.get('orgs', o)) for o in sel['orgs'])}; период {fmt_d(sel['from'])}–{fmt_d(sel['to'])}; "
-                                     f"без изменений: {len(work['same'])}; пропущено по ТР-70: {len(pv['skip70'])}; на проверку казначею (ТР-85): {held_n}"
+                                     f"без изменений: {len(work['same'])}; проверено на двойной учёт (ТР-70): {len(pv['dup'])}, "
+                                     f"из них ждут казначея: {sum(1 for x in pv['dup'] if x['st'] in ('nomatch', 'ambiguous'))}; на проверку казначею (ТР-85): {held_n}"
                                      + (f"; предупреждений: {len(pv['warns'])}" if pv["warns"] else "")})
     C.st.audit(u, "Загрузка файла", file_name, f"документы: добавлено {len(work['add'])}, изменено {len(work['upd'])}, исключено {len(work['exc'])}, без изменений {len(work['same'])}, на проверку {held_n}")
     return {"added": len(work["add"]), "updated": len(work["upd"]), "excluded": len(work["exc"]), "held": held_n}
@@ -907,12 +1062,125 @@ def apply_bal(C, u, p, file_name):
     return {"added": add, "updated": upd, "bad": bad}
 
 
+# ======================= признаки документов ERP по GUID (ДР-05…07) =======================
+def preview_flags(C, p):
+    """Файл признаков: GUID и любые из колонок «Проведён», «Согласован», «Помечен на удаление», «Проведено банком».
+    Пустая ячейка — «Нет данных», отсутствующая колонка — признак не меняется. Документа ещё нет — признаки применятся при его загрузке."""
+    from .logic import doc_eval, tri_text
+    shs = _sheets(p)
+    ok_ = lambda s_: "guid" in map_header(s_["rows"], FLAGS_SPEC)[1] and len(map_header(s_["rows"], FLAGS_SPEC)[1]) > 1
+    sh = next((s_ for s_ in shs if ok_(s_)), shs[0])
+    hi, m, missing = map_header(sh["rows"], FLAGS_SPEC)
+    errors, warns, items = [], [], []
+    if "guid" not in m or len(m) < 2:
+        errors.append({"row": hi + 1, "msg": "Нужны колонка «GUID документа (ERP)» и хотя бы одна из колонок: Проведён, Согласован, Помечен на удаление, Проведено банком"})
+        return {"errors": errors, "warns": warns, "items": [], "cols": []}, []
+    cols = [k for k in ("posted", "approved", "deleted", "bank") if k in m]
+    seen = set()
+    for i, r in enumerate(sh["rows"][hi + 1:]):
+        if not r or not any(txt(c) for c in r):
+            continue
+        n = hi + 2 + i
+        g_ = txt(cell(r, m, "guid"))
+        if not g_:
+            errors.append({"row": n, "msg": "пустой GUID"}); continue
+        if g_ in seen:
+            errors.append({"row": n, "msg": f"GUID «{g_}» повторяется в файле"}); continue
+        seen.add(g_)
+        f, bad = {}, False
+        for k in cols:
+            v = cell(r, m, k)
+            try:
+                if k == "posted":
+                    f["posted"], dm = status_flags(v)
+                    if dm:
+                        f["deleted"] = True
+                else:
+                    f[k] = tri(v) if not (k == "deleted" and f.get("deleted")) else True
+            except ValueError as ex:
+                errors.append({"row": n, "msg": f"«{FLAGS_SPEC[k][0]}»: неизвестное значение «{ex}» — ожидается Да / Нет или пусто"}); bad = True
+        if bad:
+            continue
+        doc = next((d for d in C.S["docs"] if d.get("guid") == g_ and d["source"] == "file"), None)
+        old = dict(((C.get("erpFlags", g_) or {}).get("flags") or {}))
+        new = dict(old, **f)
+        it = {"row": n, "guid": g_, "flags": {k: new.get(k) for k in ("posted", "approved", "deleted", "bank")}, "doc": doc["id"] if doc else None,
+              "no": doc.get("no1c") if doc else "", "type": doc["type"] if doc else "", "changes": []}
+        if doc:
+            before = doc_eval(C, doc)
+            nd = dict(doc, flags=dict(it["flags"], v=1, bank=it["flags"]["bank"] if doc["type"] == "СБДС" else None))
+            after = doc_eval(C, nd)
+            for k in ("posted", "approved", "deleted", "bank"):
+                if k == "bank" and doc["type"] != "СБДС":
+                    continue
+                if before["flags"].get(k) != after["flags"].get(k):
+                    it["changes"].append({"f": k, "before": tri_text(before["flags"].get(k)), "after": tri_text(after["flags"].get(k))})
+            it["countsBefore"], it["countsAfter"] = before["counts"], after["counts"]
+            it["conflict"] = after["conflict"]
+        else:
+            it["changes"] = [{"f": k, "before": tri_text(old.get(k)), "after": tri_text(new.get(k))} for k in cols if old.get(k) != new.get(k)]
+        it["st"] = ("changed" if it["changes"] else "same") if doc else "nodoc"
+        items.append(it)
+    if any(x["st"] == "nodoc" for x in items):
+        warns.append({"row": "—", "msg": f"Документов с этими GUID ещё нет: {sum(1 for x in items if x['st'] == 'nodoc')} — признаки сохранятся и применятся при загрузке отчёта «История согласования»"})
+    return {"errors": errors, "warns": warns, "items": items, "cols": cols}, items
+
+
+def apply_flags(C, u, p, file_name):
+    """ДР-05…08: признаки ERP обновляют документ по GUID без дублей. Отмена — сразу вне расчёта; исполнение банком — сразу в Кф (ТР-85)."""
+    need_upload(u)
+    pv, items = preview_flags(C, p)
+    if pv["errors"]:
+        raise ApiError(["Файл с ошибками целиком не загружается (ТР-63)."])
+    from .logic import doc_flags, movement_snap
+    now = now_iso()
+    ch = 0
+    for it in items:
+        rec = C.get("erpFlags", it["guid"])
+        if rec:
+            if rec.get("flags") != it["flags"]:
+                rec.update(flags=it["flags"], t=now, file=file_name); C.st.save("erpFlags", rec)
+        else:
+            C.st.add("erpFlags", {"guid": it["guid"], "flags": it["flags"], "t": now, "file": file_name})
+        d = C.get("docs", it["doc"]) if it["doc"] else None
+        if not d or not it["changes"]:
+            continue
+        before = doc_snap(C, d)
+        nf = dict(it["flags"], v=1)
+        if d["type"] != "СБДС":
+            nf["bank"] = None
+        d["flags"] = nf
+        d["approved"] = nf["approved"] is True if d["type"] == "СБДС" else True
+        d["bankDone"] = nf["bank"] is True
+        d["status"] = "Помечен на удаление" if nf["deleted"] else "Проведён" if nf["posted"] else "Не проведён" if nf["posted"] is False else ""
+        if d.get("held") and not would_count(C, d):
+            d["held"], d["review"] = None, None   # ДР-07: отмена — вне расчёта сразу
+        C.st.save("docs", d)
+        ch += 1
+        after = doc_snap(C, d)
+        add_version(C, "doc", d, before, after, f"признаки ERP, файл {file_name}", u)
+        if in_closed(C, d["date"]):
+            C.st.add("closedChanges", {"id": None, "t": now, "docId": d["id"], "docNo": f"{d['type']} {d['no1c']} ({d['guid']})", "date": d["date"],
+                                       "diff": "; ".join(f"{FLAG_TXT[x['f']]}: {x['before']} → {x['after']}" for x in it["changes"]), "seen": []})
+    nodoc = sum(1 for x in items if x["st"] == "nodoc")
+    C.st.add("exchangeLog", {"id": None, "t": now, "u": u["id"], "kind": KIND_NAMES["flags"], "file": file_name, "added": nodoc, "updated": ch, "excluded": 0,
+                             "errors": 0, "text": f"GUID в файле: {len(items)}; изменены признаки документов: {ch}; без изменений: {sum(1 for x in items if x['st'] == 'same')}; "
+                                                  f"документов ещё нет: {nodoc}"})
+    C.st.audit(u, "Загрузка файла", file_name, f"признаки ERP: GUID {len(items)}, изменено документов {ch}")
+    return {"updated": ch, "nodoc": nodoc, "items": len(items)}
+
+
+FLAG_TXT = {"posted": "Проведён", "approved": "Согласован", "deleted": "Помечен на удаление", "bank": "Проведено банком"}
+
+
 def preview(C, u, kind, p):
-    if kind == "exp":
+    if kind in ("exp", "flags"):
         need_upload(u)
     else:
         need_admin(u)
-    if kind == "exp":
+    if kind == "flags":
+        pv, _ = preview_flags(C, p)
+    elif kind == "exp":
         pv, _ = preview_exp(C, p)
     elif kind == "ref":
         pv, _ = preview_ref(C, p)

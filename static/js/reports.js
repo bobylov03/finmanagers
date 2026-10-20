@@ -116,17 +116,21 @@ function viewRep37(){
     </tbody></table></div></div></div>`;
 }
 
+/** «Выбрать все»: верхние кошельки и служебная группа «Без кошелька» (ДР-10) */
+function allWalletsSel(){ const V = visibleWallets(); return [...[...V].filter(id=>!wal(id).parent||!V.has(wal(id).parent)), ...(seesNoWallet(me())?[NOWAL]:[])]; }
 /* ---------- ТР-75. Расположение ДС: компания → счёт или касса, Кф и Кп рядом, группы сворачиваются ---------- */
 let R75C = new Set();   // свёрнутые компании
 function toggle75(id,on){ const a = RF.rep75.wallets; RF.rep75.wallets = on ? [...new Set([...a,id])] : a.filter(x=>x!==id); render(); }
 function tog75(o){ R75C.has(o) ? R75C.delete(o) : R75C.add(o); render(); }
 function viewRep75(){
   DRILLS = []; const F = RF.rep75; const date = repDate(F);
-  const sel = new Set(); F.wallets.forEach(id=>{ (F.sub?descendants(id):new Set([id])).forEach(x=>{ if(visibleWallets().has(x)) sel.add(x); }); });
-  const list = visFacts().filter(f=>f.wallet && sel.has(f.wallet) && (f.date<=date || (f.kp||f.date)<=date));
+  const sel = new Set(); F.wallets.forEach(id=>{ if(id===NOWAL) return; (F.sub?descendants(id):new Set([id])).forEach(x=>{ if(visibleWallets().has(x)) sel.add(x); }); });
+  const selNW = F.wallets.includes(NOWAL) && seesNoWallet(me());   // ДР-10: служебная группа «Без кошелька»
+  const inSel = f => f.wallet ? sel.has(f.wallet) : selNW;
+  const list = visFacts().filter(f=>inSel(f) && (f.date<=date || (f.kp||f.date)<=date));
   const m = new Map();
   list.forEach(f=>{ const k = f.org+"|"+f.acc+"|"+f.cur; let r = m.get(k); if(!r){ r={org:f.org, acc:f.acc, cur:f.cur, kf:0, kp:0, byW:{}}; m.set(k,r);}
-    if(f.date<=date){ r.kf+=f.sum; r.byW[f.wallet]=(r.byW[f.wallet]||0)+f.sum; } if((f.kp||f.date)<=date) r.kp+=f.sum; });
+    if(f.date<=date){ r.kf+=f.sum; const wk = f.wallet||NOWAL; r.byW[wk]=(r.byW[wk]||0)+f.sum; } if((f.kp||f.date)<=date) r.kp+=f.sum; });
   const rows = [...m.values()].filter(r=>Math.abs(r.kf)>=0.005 || Math.abs(r.kp)>=0.005);
   const bad = badAccs();
   const orgs = [...new Set(rows.map(r=>r.org))].sort((a,b)=>nm(org(a)).localeCompare(nm(org(b)),"ru"));
@@ -138,17 +142,17 @@ function viewRep75(){
     const html = rs.map(r=>{ const k = rateAt(r.cur,date); const uf = k?r2(r.kf/k):NaN, up = k?r2(r.kp/k):NaN; if(k){ sF += r.kf/k; sP += r.kp/k; } else missing.add(curCode(r.cur));
       if(closed) return "";
       const a = acc(r.acc);
-      return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:40px">${drillLink(()=>showFacts(nm(a), f=>f.wallet&&sel.has(f.wallet)&&f.acc===r.acc&&f.cur===r.cur&&(f.date<=date||(f.kp||f.date)<=date)), esc(nm(a)))}
+      return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:40px">${drillLink(()=>showFacts(nm(a), f=>inSel(f)&&f.acc===r.acc&&f.cur===r.cur&&(f.date<=date||(f.kp||f.date)<=date)), esc(nm(a)))}
         <span class="muted">${a?esc(a.kind==="Касса"?"касса":(a.accType||"счёт").toLowerCase()):""}</span>${bad.has(r.acc)?` <span class="tag off">расхождение</span>`:""}</td>
         <td>${esc(curCode(r.cur))}</td><td class="num kf ${r.kf<0?"neg":""}">${fmt(r2(r.kf))}</td><td class="num kp ${r.kp<0?"neg":""}">${fmt(r2(r.kp))}</td>${usdCell(uf)}${usdCell(up)}
-        <td class="muted" style="font-size:11px">${Object.entries(r.byW).filter(([w,v])=>Math.abs(v)>=0.005).map(([w,v])=>`${esc(nm(wal(w)))}: ${fmt(r2(v))}`).join("; ")}</td></tr>`; }).join("");
+        <td class="muted" style="font-size:11px">${Object.entries(r.byW).filter(([w,v])=>Math.abs(v)>=0.005).map(([w,v])=>`${esc(wpName(w))}: ${fmt(r2(v))}`).join("; ")}</td></tr>`; }).join("");
     gF.v += sF; gP.v += sP;
     return `<tr class="grp"><td colspan="4"><span class="tw"><button type="button" class="twist ${closed?"":"open"}" aria-expanded="${!closed}" aria-label="${closed?"Развернуть":"Свернуть"}" onclick="tog75('${o}')"></button> ${esc(nm(org(o)))} <span class="muted">· ${rs.length} ${plural(rs.length,"счёт","счёта","счетов")}</span></span></td>${usdCell(sF)}${usdCell(sP)}<td></td></tr>` + html;
   }).join("");
   return `${repHeader("Расположение ДС","ТР-75",`Выберите один или несколько кошельков — отчёт покажет, в каких компаниях, на каких счетах и кассах и в какой валюте лежат их деньги. ${KFKP_HELP} Компании сворачиваются, как группировка в Excel.`)}
   ${emptyHint()}
   <div class="toolbar">
-    ${walletPicker("w75", F.wallets, "toggle75", {all:"Не выбраны", onAll:"RF.rep75.wallets=[...visibleWallets()].filter(id=>!wal(id).parent||!visibleWallets().has(wal(id).parent));render()", onClear:"RF.rep75.wallets=[];render()"})}
+    ${walletPicker("w75", F.wallets, "toggle75", {all:"Не выбраны", noWallet:true, onAll:"RF.rep75.wallets=allWalletsSel();render()", onClear:"RF.rep75.wallets=[];render()"})}
     <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep75.date=this.value;render()"></label>
     <div class="fld"><span>Подчинённые</span><div class="chips">${chip(F.sub,"RF.rep75.sub=!RF.rep75.sub;render()","включать")}</div></div>
     <div class="grow"></div>
@@ -159,7 +163,7 @@ function viewRep75(){
   <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t75" class="kfkp">
     <thead><tr><th rowspan="2">Компания / счёт или касса</th><th rowspan="2">Валюта</th><th class="num grp-h" colspan="2">Остаток в валюте</th><th class="num grp-h" colspan="2">Остаток, USD</th><th rowspan="2">В т.ч. по кошелькам (Кф)</th></tr>
       <tr><th class="num kf" title="Фактический расчётный остаток">Кф</th><th class="num kp" title="Плановый остаток: Кф − Писх">Кп</th><th class="num kf">Кф</th><th class="num kp">Кп</th></tr></thead>
-    <tbody>${F.wallets.length ? (body || `<tr><td colspan="7" class="muted">У выбранных кошельков нет остатков на ${fmtD(date)}</td></tr>`) : `<tr><td colspan="7" class="empty-cell">Выберите один или несколько кошельков в поле «Кошельки» выше.<br><button type="button" class="btn sm" style="margin-top:10px" onclick="RF.rep75.wallets=[...visibleWallets()].filter(id=>!wal(id).parent||!visibleWallets().has(wal(id).parent));render()">Показать все кошельки</button></td></tr>`}
+    <tbody>${F.wallets.length ? (body || `<tr><td colspan="7" class="muted">У выбранных кошельков нет остатков на ${fmtD(date)}</td></tr>`) : `<tr><td colspan="7" class="empty-cell">Выберите один или несколько кошельков в поле «Кошельки» выше.<br><button type="button" class="btn sm" style="margin-top:10px" onclick="RF.rep75.wallets=allWalletsSel();render()">Показать все кошельки</button></td></tr>`}
     ${F.wallets.length && body ? `<tr class="tot"><td colspan="4">Итого, USD</td>${usdCell(gF.v)}${usdCell(gP.v)}<td></td></tr>`:""}</tbody>
   </table></div></div></div>`;
 }
@@ -184,7 +188,8 @@ function viewRep38(){
   const to = F.to || CUR.date; const from = F.from || (to.slice(0,7)+"-01");
   let list = visFacts();
   let S = null;
-  if(F.wallets.length){ S = new Set(); F.wallets.forEach(id=>(F.sub?descendants(id):new Set([id])).forEach(x=>S.add(x))); list = list.filter(f=>f.wallet && S.has(f.wallet)); }
+  const selNW = !F.wallets.length || F.wallets.includes(NOWAL);   // ДР-10: «Без кошелька» входит в отчёт и итоги
+  if(F.wallets.length){ S = new Set(); F.wallets.forEach(id=>{ if(id!==NOWAL) (F.sub?descendants(id):new Set([id])).forEach(x=>S.add(x)); }); list = list.filter(f=>f.wallet ? S.has(f.wallet) : selNW); }
   if(F.cur) list = list.filter(f=>f.cur===F.cur);
   const inCur = !!F.cur;
   const B = buckets(from, to, F.step);
@@ -226,15 +231,23 @@ function viewRep38(){
     ${balRow("Остаток на конец","end","tot")}`;
   // По кошелькам: иерархия за весь период (раздел 9)
   const V = visibleWallets(); const allVis = visFacts().filter(f=>!F.cur || f.cur===F.cur);
-  const wRows = visibleTree().filter(w=>!S || S.has(w.id)).map(w=>{
-    const D = descendants(w.id); const lst = allVis.filter(f=>f.wallet && D.has(f.wallet) && V.has(f.wallet) && (!S || S.has(f.wallet)));
+  const wRow = (w, lst) => {
     const m = inCur ? "cur" : "usd"; const per = lst.filter(f=>f.date>=from && f.date<=to);
     const sumC = c => r2(per.filter(f=>f.cat===c).reduce((s,f)=>s+val(f,m),0));
     const start = balOf(lst, addDays(from,-1), m), end = balOf(lst, to, m);
     const r = {w, start, end, open:sumC("opening"), inn:sumC("in"), out:sumC("out"), tr:sumC("transfer"), int:sumC("internal")};
     r.fx = inCur ? 0 : r2(end - start - r.open - r.inn - r.out - r.tr - r.int);
     r.endUsd = inCur ? balOf(lst, to, "usd") : end;
-    return r; });
+    return r; };
+  const wRows = visibleTree().filter(w=>!S || S.has(w.id)).map(w=>{ const D = descendants(w.id);
+    return wRow(w, allVis.filter(f=>f.wallet && D.has(f.wallet) && V.has(f.wallet) && (!S || S.has(f.wallet)))); });
+  // ДР-10: служебная группа «Без кошелька» и итог по всем строкам — без потери и двойного учёта движений
+  const nwRow = selNW && seesNoWallet(me()) ? wRow({id:NOWAL, name:"Без кошелька", _lvl:0, nw:true}, allVis.filter(f=>!f.wallet)) : null;
+  const totRow = wRow({id:"", name:"Итого", _lvl:0, tot:true}, allVis.filter(f=>f.wallet ? (V.has(f.wallet) && (!S || S.has(f.wallet))) : !!nwRow));
+  const wTr = (r, cls) => `<tr class="${cls}"><td>${r.w.nw?`<i>Без кошелька</i>`:r.w.tot?"Итого":`<span class="tree-pad" style="width:${r.w._lvl*16}px"></span>${esc(r.w.name)}`}</td>
+      <td class="num ${r.start<0?"neg":""}">${fmt(r.start)}</td><td class="num">${r.open?fmtS(r.open):""}</td><td class="num pos">${r.inn?fmtS(r.inn):""}</td><td class="num neg">${r.out?fmtS(r.out):""}</td>
+      <td class="num">${r.tr?fmtS(r.tr):""}</td><td class="num">${r.int?fmtS(r.int):""}</td>${inCur?"":`<td class="num">${r.fx?fmtS(r.fx):""}</td>`}
+      <td class="num ${r.end<0?"neg":""}"><b>${fmt(r.end)}</b></td>${inCur?`<td class="num ${r.endUsd<0?"neg":""}">${fmt(r.endUsd)}</td>`:""}</tr>`;
   const curs = [...new Set([...DB.accounts,...DB.cashboxes].map(a=>a.cur))].filter(Boolean);
   const unit = inCur ? curCode(F.cur) : "USD";
   return `${repHeader("Фактический ДДС с остатками","ТР-38",`Поступления со знаком «+», расходы со знаком «−». Обороты в USD — по курсам ERP на даты операций, остатки — по курсу на конец шага; разница показана строкой «Курсовая разница» (ТР-58). При выборе валюты отчёт показывает суммы в валюте счёта и в USD (ТР-33).`)}
@@ -244,7 +257,7 @@ function viewRep38(){
     <label class="fld"><span>по</span><input type="date" value="${to}" onchange="RF.rep38.to=this.value;render()"></label>
     <div class="fld"><span>Шаг</span><div class="seg">${[["day","День"],["week","Неделя"],["month","Месяц"]].map(([k,t])=>`<button type="button" class="${F.step===k?"on":""}" aria-pressed="${F.step===k}" onclick="RF.rep38.step='${k}';render()">${t}</button>`).join("")}</div></div>
     <label class="fld"><span>Валюта</span><select onchange="RF.rep38.cur=this.value;render()"><option value="">Все — в USD</option>${curs.map(c=>`<option value="${c}" ${F.cur===c?"selected":""}>${esc(curCode(c))} — в валюте и USD</option>`).join("")}</select></label>
-    ${walletPicker("w38", F.wallets, "toggle38", {onClear:"RF.rep38.wallets=[];render()"})}
+    ${walletPicker("w38", F.wallets, "toggle38", {noWallet:true, onAll:"RF.rep38.wallets=allWalletsSel();render()", onClear:"RF.rep38.wallets=[];render()"})}
     <div class="fld"><span>Подчинённые</span><div class="chips">${chip(F.sub,"RF.rep38.sub=!RF.rep38.sub;render()","включать")}</div></div>
     <div class="grow"></div>
     ${exportBtn("t38","ДДС")}
@@ -258,10 +271,10 @@ function viewRep38(){
   <div class="panel"><header><h2>По кошелькам за период</h2><span class="hint">${fmtD(from)} – ${fmtD(to)} · ${esc(unit)} · родитель включает подчинённые</span><div style="flex:1"></div>${exportBtn("t38w","ДДС по кошелькам")}</header>
   <div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t38w">
     <thead><tr><th>Кошелёк</th><th class="num">Остаток на начало</th><th class="num">Ввод остатков</th><th class="num">Поступления</th><th class="num">Расходы</th><th class="num">Переброски</th><th class="num">Внутренние</th>${inCur?"":`<th class="num">Курсовая разница</th>`}<th class="num">Остаток на конец</th>${inCur?`<th class="num">Остаток на конец, USD</th>`:""}</tr></thead>
-    <tbody>${wRows.map(r=>`<tr class="${r.w._lvl?"":"grp"}"><td><span class="tree-pad" style="width:${r.w._lvl*16}px"></span>${esc(r.w.name)}</td>
-      <td class="num ${r.start<0?"neg":""}">${fmt(r.start)}</td><td class="num">${r.open?fmtS(r.open):""}</td><td class="num pos">${r.inn?fmtS(r.inn):""}</td><td class="num neg">${r.out?fmtS(r.out):""}</td>
-      <td class="num">${r.tr?fmtS(r.tr):""}</td><td class="num">${r.int?fmtS(r.int):""}</td>${inCur?"":`<td class="num">${r.fx?fmtS(r.fx):""}</td>`}
-      <td class="num ${r.end<0?"neg":""}"><b>${fmt(r.end)}</b></td>${inCur?`<td class="num ${r.endUsd<0?"neg":""}">${fmt(r.endUsd)}</td>`:""}</tr>`).join("") || `<tr><td colspan="10" class="muted">Нет кошельков</td></tr>`}</tbody></table></div></div></div>`;
+    <tbody>${wRows.map(r=>wTr(r, r.w._lvl?"":"grp")).join("") || `<tr><td colspan="10" class="muted">Нет кошельков</td></tr>`}
+      ${nwRow?wTr(nwRow, "grp nowallet"):""}
+      ${wRows.length||nwRow?wTr(totRow, "tot"):""}</tbody></table></div></div></div>
+  <p class="muted" style="font-size:12px">Итого — по всем кошелькам верхнего уровня${nwRow?" и группе «Без кошелька»":""}: каждое движение входит в итог один раз (родитель уже включает подчинённых).</p>`;
 }
 
 /* ---------- ТР-40. Внутренние займы ---------- */
@@ -467,11 +480,20 @@ let OPSCFG; try{ OPSCFG = JSON.parse(localStorage.getItem("wallets-opscols")||"n
 if(!Array.isArray(OPSCFG) || !OPSCFG.length) OPSCFG = OPS_COLS.map(c=>({k:c[0], on:OPS_DEF.includes(c[0])})).sort((a,b)=>(OPS_DEF.indexOf(a.k)+1||99)-(OPS_DEF.indexOf(b.k)+1||99));
 OPS_COLS.forEach(c=>{ if(!OPSCFG.some(x=>x.k===c[0])) OPSCFG.push({k:c[0], on:false}); });
 function saveOpsCfg(){ try{ localStorage.setItem("wallets-opscols", JSON.stringify(OPSCFG)); }catch(e){} }
-function opsAccount(d){   // ТР-07: участие в Кф и Кп
-  const st = docState(d);
-  if(st!=="posted") return docStateTag(d);
+/** Почему документ не формирует движение (ДР-07, ДР-09, ТР-70) */
+function outReason(d){
+  const st = docState(d); if(st!=="posted") return STATE_NAMES[st].toLowerCase();
+  const ev = d.ev||{}; const F = ev.flags||{};
+  if(ev.note) return ev.note;
+  if(d.type==="СБДС" && F.approved===false) return "не согласован";
+  if((ev.missing||[]).length) return "нет данных: " + ev.missing.map(k=>FLAG_NAMES[k].toLowerCase()).join(", ");
+  if(DB.settings.startDate && d.date < DB.settings.startDate) return "до начала учёта";
+  return "";
+}
+function opsAccount(d){   // ТР-07, ДР-09: участие в Кф и Кп
+  if(!docCounts(d)){ const r = outReason(d); return docState(d)!=="posted" ? docStateTag(d) : `<span class="tag" title="${esc(r)}">вне расчёта</span>${r?` <span class="muted" style="font-size:11.5px">${esc(r)}</span>`:""}`; }
   if(d.type!=="СБДС") return `<span class="tag ok">в Кф</span>`;
-  if(d.bankDate) return `<span class="tag ok" title="Исполнен банком ${fmtD(d.bankDate)}">в Кф</span>`;
+  if(d.ev ? d.ev.kf!==FAR : d.bankDate) return `<span class="tag ok" title="Исполнен банком ${fmtD(d.bankDate)}">в Кф</span>`;
   return d.sentConf ? `<span class="tag info" title="Казначей подтвердил отправку">в Кп (Писх)</span>` : `<span class="tag warn" title="Банк не исполнил, казначей не подтвердил отправку">не исполнен банком</span>`;
 }
 function openOpsForm(){
@@ -485,7 +507,7 @@ function histDocs(){
   const F = RF.hist; const q = norm(F.cpty);
   return DB.docs.filter(d=>d.source==="file" && (d.type==="СБДС"||d.type==="РКО")).filter(d=>
     (!F.from || d.date>=F.from) && (!F.to || d.date<=F.to) && (!F.org || d.org===F.org)
-    && (!F.dept || d.lines.some(l=>l.dept===F.dept)) && (!q || d.lines.some(l=>norm(l.cpty).includes(q))))
+    && (!F.dept || d.lines.some(l=>l.dept && (l.dept===F.dept || deptInGroup(l.dept, F.dept)))) && (!q || d.lines.some(l=>norm(l.cpty).includes(q))))
     .sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
 }
 function opsMatch(d, l, q){   // поиск: номер ERP, сумма (с разделителями или без), получатель, заметки, GUID
@@ -499,7 +521,7 @@ function viewHist(){
   const rows = []; docs.forEach(d=>d.lines.forEach(l=>{ if(lineVisible(l.wallet) && opsMatch(d, l, F.q||"")) rows.push([d,l]); }));
   const shown = rows.slice(0, 2000);
   return `<h1>Операции <span class="tzref">ТР-83</span></h1>
-  <p class="lede">Движения денег из отчёта ERP «История согласования» за период — по строке на каждую строку расшифровки. Само наличие документа в отчёте движения не создаёт: в фактический остаток (Кф) СБДС входит после исполнения банком, в плановый (Кп) — после подтверждения казначеем (ТР-07). Колонки настраиваются кнопкой «Настроить форму».</p>
+  <p class="lede">Движения денег из отчёта ERP «История согласования» за период — по строке на каждую строку расшифровки. Само наличие документа в отчёте движения не создаёт: нужны признаки ERP «Проведён» и «Согласован» (ДР-07); в фактический остаток (Кф) СБДС входит после исполнения банком, в плановый (Кп) — после подтверждения казначеем (ТР-07, ДР-09). Колонки настраиваются кнопкой «Настроить форму».</p>
   <div class="toolbar">
     <label class="fld" style="min-width:260px"><span>Поиск</span><input type="search" value="${esc(F.q||"")}" placeholder="номер ERP, сумма, получатель…" onchange="RF.hist.q=this.value;render()"></label>
     <label class="fld"><span>Период с</span><input type="date" value="${F.from}" onchange="RF.hist.from=this.value;render()"></label>

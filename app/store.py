@@ -82,6 +82,8 @@ CREATE TRIGGER IF NOT EXISTS db_expl_no_replace BEFORE INSERT ON db_explained WH
   BEGIN SELECT RAISE(ABORT, 'daily balance record is immutable'); END;
 CREATE TABLE IF NOT EXISTS exchange_log(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, u TEXT, kind TEXT, file TEXT,
   added INTEGER, updated INTEGER, excluded INTEGER, errors INTEGER, text TEXT);
+-- ДР-05, ДР-06: признаки документов ERP по GUID (согласован, проведён, помечен на удаление, проведено банком)
+CREATE TABLE IF NOT EXISTS erp_flags(guid TEXT PRIMARY KEY, flags TEXT, t TEXT, file TEXT);
 CREATE TABLE IF NOT EXISTS closed_changes(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, doc_id TEXT, doc_no TEXT, date TEXT, diff TEXT, seen TEXT);
 
 -- Журнал аудита (ТР-44…47)
@@ -133,6 +135,7 @@ TABLES = {
                                 ("can_upload", "canUpload", "b")]),
     "exchangeLog": ("exchange_log", ("id",), [("id", "id", "i"), ("t", "t", "s"), ("u", "u", "s"), ("kind", "kind", "s"), ("file", "file", "s"), ("added", "added", "i"),
                                             ("updated", "updated", "i"), ("excluded", "excluded", "i"), ("errors", "errors", "i"), ("text", "text", "s")]),
+    "erpFlags": ("erp_flags", ("guid",), [("guid", "guid", "s"), ("flags", "flags", "j"), ("t", "t", "s"), ("file", "file", "s")]),
     "closedChanges": ("closed_changes", ("id",), [("id", "id", "i"), ("t", "t", "s"), ("doc_id", "docId", "s"), ("doc_no", "docNo", "s"), ("date", "date", "s"),
                                                 ("diff", "diff", "s"), ("seen", "seen", "j")]),
 }
@@ -142,7 +145,7 @@ DOC_COLS = [("id", "id", "s"), ("no", "no", "s"), ("source", "source", "s"), ("g
             ("excluded", "excluded", "b"), ("deleted", "deleted", "b"), ("author", "author", "s"), ("created", "created", "s"), ("loaded", "loaded", "s"),
             ("file_name", "fileName", "s"), ("file_sig", "fileSig", "s"), ("erp_type", "erpType", "s"), ("stage", "stage", "s"), ("rate", "rate", "f"),
             ("doc_sum", "docSum", "f"), ("fixed", "fixed", "j"), ("held", "held", "j"), ("review", "review", "j"), ("fmt", "fmt", "s"),
-            ("bank_name", "bankName", "s"), ("acc_no", "accNo", "s"), ("usd_erp", "usdErp", "f")]
+            ("bank_name", "bankName", "s"), ("acc_no", "accNo", "s"), ("usd_erp", "usdErp", "f"), ("flags", "flags", "j"), ("dup", "dup", "j")]
 LINE_COLS = [("sum", "sum", "f"), ("usd", "usd", "f"), ("wallet", "wallet", "s"), ("wsrc", "wsrc", "s"), ("rule", "rule", "s"), ("file_wallet", "fileWallet", "s"),
              ("dept", "dept", "s"), ("cf", "cf", "s"), ("zone", "zone", "s"), ("cpty", "cpty", "s"), ("contract", "contract", "s"), ("purpose", "purpose", "s"),
              ("fixed", "fixed", "j"), ("split", "split", "j")]
@@ -205,7 +208,7 @@ class Store:
                 ("docs", "fixed", "TEXT"), ("docs", "held", "TEXT"), ("docs", "review", "TEXT"), ("docs", "fmt", "TEXT"),
                 ("doc_lines", "fixed", "TEXT"), ("opening", "cur", "TEXT"), ("ops", "xrate", "REAL"),
                 ("docs", "bank_name", "TEXT"), ("docs", "acc_no", "TEXT"), ("docs", "usd_erp", "REAL"), ("accounts", "number", "TEXT"),
-                ("doc_lines", "split", "TEXT")]
+                ("doc_lines", "split", "TEXT"), ("docs", "flags", "TEXT"), ("docs", "dup", "TEXT")]
 
     def _cols(self, table):
         return {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -284,7 +287,7 @@ class Store:
                 tgt["versions"].append({"t": r["t"], "u": r["u"], "source": r["source"], "diff": r["diff"],
                                         "before": json.loads(r["before"] or "null"), "after": json.loads(r["after"] or "null")})
         for d in docs.values():
-            for k in ("held", "review"):
+            for k in ("held", "review", "flags", "dup"):
                 if d.get(k) == []:
                     d[k] = None
         for a in S["accounts"] + S["cashboxes"]:
@@ -313,7 +316,8 @@ class Store:
             return None
         ix = self._idx.get(coll)
         if ix is None:
-            ix = self._idx[coll] = {x.get("id"): x for x in self.S[coll]}
+            kf = "guid" if coll == "erpFlags" else "id"
+            ix = self._idx[coll] = {x.get(kf): x for x in self.S[coll]}
         return ix.get(id_)
 
     def add(self, coll, obj):
@@ -417,7 +421,7 @@ class Store:
         # сданные отчёты Daily Balance, корректировки и «Объяснено» неизменяемы (ТР-96) и, как журнал аудита, не удаляются
         for table in ["doc_lines", "versions", "docs", "ops", "opening", "bal1c", "exchange_log", "closed_changes", "rules", "contracts",
                       "wallets", "rates", "currencies", "orgs", "accounts", "cashboxes", "cf_types", "depts", "zones", "settings", "counters", "users",
-                      "mappings", "db_positions", "db_drafts"]:
+                      "mappings", "db_positions", "db_drafts", "erp_flags"]:
             c.execute(f"DELETE FROM {table}")
         # сессия того, кто выполняет действие, сохраняется; остальные пользователи входят заново
         c.execute("DELETE FROM sessions WHERE user_id IS NOT ?", (keep_user["id"] if keep_user else None,))

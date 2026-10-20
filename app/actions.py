@@ -720,7 +720,8 @@ def cond_text(C, c):
         vals = "; ".join(c.get("values") or [])
     else:
         vals = ", ".join(nm(C.get(lists[f], v) if f in lists else C.acc(v)) for v in c.get("values") or [])
-    return f"{RULE_FIELDS.get(f, '?')} {RULE_OPS.get(c.get('op'), '?').lower()} {vals or '—'}"
+    from .logic import LEGACY_RULE_FIELDS
+    return f"{RULE_FIELDS.get(f) or LEGACY_RULE_FIELDS.get(f, '?')} {RULE_OPS.get(c.get('op'), '?').lower()} {vals or '—'}"
 
 
 def save_rule(C, u, p):
@@ -729,6 +730,8 @@ def save_rule(C, u, p):
     conds = []
     for c in p.get("conds") or []:
         f, op = c.get("field"), c.get("op")
+        if f == "zone":
+            raise ApiError(["Условие «Зона ответственности» исключено из правил (ДР-02): ERP её больше не передаёт. Замените его условием по подразделению или другому полю."])
         if f not in RULE_FIELDS or op not in RULE_OPS or (op == "group" and f != "dept"):
             raise ApiError(["Неверное условие"])
         vals = [s(v, 200) for v in c.get("values") or [] if s(v)]
@@ -922,6 +925,45 @@ def confirm_review(C, u, doc_id):
     add_version(C, "doc", d, before, after, "проверка изменений", u)
     C.st.audit(u, "Проверка изменений документа", f"{d['type']} {d.get('no1c') or d['no']}",
                "; ".join(f"{x.get('f')}{(' стр.' + str(x['line'])) if x.get('line') else ''}: {x.get('before')} → {x.get('after')}" for x in rv.get("diff") or []) or "подтверждено")
+
+
+# ================= защита от двойного учёта: решение казначея (ТР-70, ДР-01) =================
+def dup_decide(C, u, doc_id, action, manual=None):
+    """link — документ соответствует ручной операции (повторное движение не создаётся); accept — ручной операции нет,
+    движение учитывается по документу; reset — вернуть на проверку."""
+    from .logic import doc_counts_manual, in_closed
+    d = C.get("docs", doc_id)
+    if not d or d.get("source") != "file" or not d.get("dup"):
+        raise ApiError(["Документ не проверяется на двойной учёт"])
+    if not can_review(C, u, d):
+        raise Forbidden("Проверяет казначей кошелька из строк документа; документ без кошелька — фин. контролер или администратор (ТР-85)")
+    if in_closed(C, d["date"]) and not is_admin(u):
+        raise ApiError([f"Период по {fmt_d(C.S['settings']['closedTo'])} закрыт (ТР-55): решение по документу закрытого периода принимает администратор"])
+    old = dict(d["dup"])
+    if action == "link":
+        m = C.get("docs", manual)
+        if not m or m.get("source") != "manual" or m["type"] != "ПЕР" or not doc_counts_manual(C, m):
+            raise ApiError(["Выберите проведённую ручную операцию (конвертацию или переброску)"])
+        other = next((x for x in C.S["docs"] if x is not d and (x.get("dup") or {}).get("manual") == manual), None)
+        if other:
+            raise ApiError([f"Эта ручная операция уже сопоставлена с документом {other.get('no1c') or other['guid']}"])
+        d["dup"] = {"st": "matched", "manual": manual, "by": "treasurer", "u": u["name"], "t": now_iso()}
+    elif action == "accept":
+        d["dup"] = {"st": "accepted", "by": "treasurer", "u": u["name"], "t": now_iso()}
+    elif action == "reset":
+        d["dup"] = {"st": "nomatch"}
+    else:
+        raise ApiError(["Неизвестное действие"])
+    C.st.save("docs", d)
+    from .importer import DUP_NAMES
+    txt_ = lambda x: DUP_NAMES.get(x.get("st"), "—") + (f" ({nm_doc(C, x.get('manual'))})" if x.get("manual") else "")
+    add_version(C, "doc", d, {"двойной учёт": txt_(old)}, {"двойной учёт": txt_(d["dup"])}, "проверка двойного учёта", u)
+    C.st.audit(u, "Проверка двойного учёта (ТР-70)", f"{d['type']} {d.get('no1c') or d['guid']}", f"{txt_(old)} → {txt_(d['dup'])}")
+
+
+def nm_doc(C, i):
+    m = C.get("docs", i)
+    return (m.get("no") or m["id"]) if m else "удалена"
 
 
 # ================= таблица соответствия состояний из реестра загрузки (ТР-106, ТР-109) =================

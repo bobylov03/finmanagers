@@ -823,3 +823,10 @@ table.kfkp td.usd{font-weight:600}
 .split-box{min-width:300px}
 .split-box select{max-width:200px}
 .lnk.sm{font-size:12px}
+
+/* ДР-05: признаки ERP в реестре загрузки — компактно, «—» = нет данных */
+.flags-mini{display:grid;grid-template-columns:auto auto;gap:1px 10px;font-size:11px;white-space:nowrap;color:var(--ink-3,#5d6a63)}
+.flags-mini b{font-weight:600;color:var(--ink)}
+.flags-mini b.muted{color:var(--ink-3,#8a958f);font-weight:400}
+.flags-mini b.neg{color:var(--neg)}
+.dup-panel>summary{cursor:pointer;padding:10px 12px;list-style-position:inside}

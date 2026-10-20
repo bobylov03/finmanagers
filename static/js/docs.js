@@ -2,7 +2,9 @@
 /* ============================================================
    12. ДОКУМЕНТЫ: СПИСОК, ПРОСМОТР, РУЧНОЙ ВВОД (раздел 3а)
    ============================================================ */
-const DF = {src:"", type:"", org:"", from:"", to:"", q:"", state:"", sort:"date", dir:"desc"};
+const DF = {src:"", type:"", org:"", from:"", to:"", dept:"", cpty:"", q:"", state:"", sort:"date", dir:"desc"};
+/** ДР-11: строки документа, видимые пользователю (у ПЕР — стороны) — по ним фильтры по подразделению и получателю */
+const docLinesVis = d => d.type==="ПЕР" ? [d.from, d.to] : (d.lines||[]).filter(l=>linePartsOf(l).some(p=>lineVisible(p.wallet)));
 function docVisible(d, u){
   u = u||me(); const V = visibleWallets(u); const nw = seesNoWallet(u);
   const ws = d.type==="ПЕР" ? [d.from.wallet, d.to.wallet] : d.lines.map(l=>l.wallet);
@@ -27,7 +29,11 @@ function docsFiltered(){
   if(DF.org) list = list.filter(d=>d.org===DF.org || (d.type==="ПЕР" && (d.from.org===DF.org||d.to.org===DF.org)));
   if(DF.from) list = list.filter(d=>d.date>=DF.from);
   if(DF.to) list = list.filter(d=>d.date<=DF.to);
-  if(["posted","notposted","deleted"].includes(DF.state)) list = list.filter(d=>docState(d)===DF.state);
+  // ДР-11: подразделение — по строкам расшифровки (группа включает подчинённые), документ показывается один раз
+  if(DF.dept) list = list.filter(d=>docLinesVis(d).some(l=>l.dept && (l.dept===DF.dept || deptInGroup(l.dept, DF.dept))));
+  if(DF.cpty){ const q = norm(DF.cpty); list = list.filter(d=>docLinesVis(d).some(l=>norm(l.cpty||"").includes(q))); }
+  if(["posted","notposted","deleted","nodata"].includes(DF.state)) list = list.filter(d=>docState(d)===DF.state);
+  else if(DF.state==="missing") list = list.filter(d=>missingData(d).length);
   else if(DF.state==="review") list = list.filter(needsReview);
   else if(DF.state==="notbank") list = list.filter(notBankDone);   // МД-27: отдельный фильтр «Не исполнен банком»
   if(DF.q){ const q = norm(DF.q); list = list.filter(d=>norm([d.no,d.no1c,d.guid,d.op,...(d.lines||[]).map(l=>l.cpty+" "+l.purpose)].join(" ")).includes(q)); }
@@ -39,11 +45,13 @@ function docsFiltered(){
 }
 function exportDocs(){
   const list = docsFiltered();
-  const rows = [["Дата","Тип","Номер","GUID 1С","Хоз. операция","Организация","Счёт или касса","Сумма","Валюта","Кошельки","Источник","Состояние"]];
+  const rows = [["Дата","Тип","Номер","GUID 1С","Хоз. операция","Организация","Счёт или касса","Сумма","Валюта","Кошельки","Подразделения","Получатели","Источник","Состояние","Служебные отметки"]];
   list.forEach(d=>{ const P = d.type==="ПЕР"; const sg = DOC_TYPES[d.type].sign;
     rows.push([fmtD(d.date), d.type, d.no1c||d.no, d.guid||"", d.op||"", P?`${nm(org(d.from.org))} → ${nm(org(d.to.org))}`:nm(org(d.org)), P?`${nm(acc(d.from.acc))} → ${nm(acc(d.to.acc))}`:nm(acc(d.acc)),
-      P ? d.from.sum : sg*docVisTotal(d), P?`${curCode(acc(d.from.acc)?.cur)}→${curCode(acc(d.to.acc)?.cur)}`:curCode(d.cur), docWallets(d), d.source==="file"?"файл 1С":"вручную",
-      STATE_NAMES[docState(d)] + (needsReview(d)?"; требует проверки":"") + (notBankDone(d)?"; не исполнен банком":"")]); });
+      P ? d.from.sum : sg*docVisTotal(d), P?`${curCode(acc(d.from.acc)?.cur)}→${curCode(acc(d.to.acc)?.cur)}`:curCode(d.cur), docWallets(d),
+      [...new Set(docLinesVis(d).map(l=>l.dept?refName(DB.depts,l.dept):"").filter(Boolean))].join(", "), [...new Set(docLinesVis(d).map(l=>l.cpty).filter(Boolean))].join(", "),
+      d.source==="file"?"файл 1С":"вручную", STATE_NAMES[docState(d)],
+      [needsReview(d)?"требует проверки: "+reviewReasons(d).join("; "):"", missingData(d).length?"нет данных: "+missingData(d).map(k=>FLAG_NAMES[k].toLowerCase()).join(", "):"", notBankDone(d)?"не исполнен банком":""].filter(Boolean).join("; ")]); });
   const fname = `Документы ${CUR.date}.xlsx`; downloadBlob(xlsxBlob([{name:"Документы", rows}]), fname);
   audit("Выгрузка в Excel", "Документы", `файл ${fname}; строк ${list.length}`);
 }
@@ -57,7 +65,9 @@ function colsMenu(){ const open = POP==="v:cols";
   return `<div class="popwrap"><button type="button" class="btn" onclick="togglePop('v:cols',event)" aria-expanded="${open}">Колонки</button>
     ${open?`<div class="pop pop-right"><div class="pop-title">Показывать колонки</div><div class="stack" style="padding:4px 12px 10px">${DOC_COLS.map(([k,t])=>`<label class="chk"><input type="checkbox" ${DOCHIDE.has(k)?"":"checked"} onchange="togDocCol('${k}')"> ${t}</label>`).join("")}</div></div>`:""}</div>`; }
 function docCpty(d){ const L = d.type==="ПЕР" ? [d.from,d.to] : d.lines.filter(l=>lineVisible(l.wallet)); return [...new Set(L.map(l=>l.cpty).filter(Boolean))].join(", "); }
-function dfCount(){ return ["type","org","from","to"].filter(k=>DF[k]).length; }
+function dfCount(){ return ["type","org","from","to","dept","cpty"].filter(k=>DF[k]).length; }
+/** Получатели из документов, видимых пользователю, — подсказка к фильтру (ДР-11) */
+function cptyList(){ const s = new Set(); DB.docs.forEach(d=>{ if(docVisible(d)) docLinesVis(d).forEach(l=>{ if(l.cpty) s.add(l.cpty); }); }); return [...s].sort((a,b)=>a.localeCompare(b,"ru")); }
 function createMenu(){
   const id = "v:create"; const open = POP===id;
   return `<div class="popwrap"><button type="button" class="btn primary" onclick="togglePop('${id}',event)" aria-expanded="${open}">Создать <span class="caret light"></span></button>
@@ -77,7 +87,7 @@ function viewDocs(){
   <p class="lede">Расходы (СБДС, РКО) приходят из 1С — файлом, позже через шлюз; здесь у них можно только назначить кошелёк. Поступления, конвертации и переброски пока вводятся вручную (ТР-68).${sw?` С ${fmtD(sw)} ручной ввод отключён — данные приходят из 1С (ТР-72).`:""}</p>
   <div class="toolbar">
     <label class="fld search"><span>Поиск</span><input type="search" value="${esc(DF.q)}" placeholder="Номер, GUID, контрагент, назначение" onchange="DF.q=this.value;DOCLIM=500;render()"></label>
-    <label class="fld"><span>Состояние</span><select onchange="DF.state=this.value;render()">${[["","Все"],["posted","Проведён"],["notposted","Не проведён"],["deleted","Помечен на удаление"],["review","Требует проверки"],["notbank","Не исполнен банком"]].map(([v,t])=>`<option value="${v}" ${DF.state===v?"selected":""}>${t}${v==="review"?` (${DB.docs.filter(needsReview).length})`:v==="notbank"?` (${DB.docs.filter(notBankDone).length})`:""}</option>`).join("")}</select></label>
+    <label class="fld"><span>Состояние</span><select onchange="DF.state=this.value;render()">${[["","Все"],["posted","Проведён"],["notposted","Не проведён"],["deleted","Помечен на удаление"],["nodata","Нет данных (признаки ERP не получены)"],["--",""],["review","Требуют проверки"],["missing","Нет данных ERP"],["notbank","Не исполнен банком"]].map(([v,t])=>v==="--"?`<option disabled>── служебные отметки ──</option>`:`<option value="${v}" ${DF.state===v?"selected":""}>${t}${v==="review"?` (${DB.docs.filter(needsReview).length})`:v==="missing"?` (${DB.docs.filter(d=>missingData(d).length).length})`:v==="notbank"?` (${DB.docs.filter(notBankDone).length})`:""}</option>`).join("")}</select></label>
     <div class="fld"><span>Источник</span>${seg(DF.src,[["","Все"],["file","Файл 1С"],["manual","Вручную"]],"DF.src")}</div>
     <div class="fld"><span>&nbsp;</span><button type="button" class="btn ${DF_MORE||nf?"on":""}" aria-expanded="${DF_MORE}" onclick="DF_MORE=!DF_MORE;render()">Ещё фильтры${nf?` <span class="count">${nf}</span>`:""}</button></div>
     <div class="grow"></div>
@@ -88,7 +98,9 @@ function viewDocs(){
     <label class="fld"><span>Организация</span><select onchange="DF.org=this.value;render()">${opts(DB.orgs,DF.org,{empty:"Все организации"})}</select></label>
     <label class="fld"><span>Дата с</span><input type="date" value="${DF.from}" onchange="DF.from=this.value;render()"></label>
     <label class="fld"><span>по</span><input type="date" value="${DF.to}" onchange="DF.to=this.value;render()"></label>
-    ${nf?`<button type="button" class="btn ghost" onclick="Object.assign(DF,{type:'',org:'',from:'',to:''});render()">Сбросить</button>`:""}
+    <label class="fld"><span>Подразделение</span><select onchange="DF.dept=this.value;render()">${optsTree(DB.depts,DF.dept,"Все подразделения")}</select></label>
+    <label class="fld"><span>Получатель</span><input type="search" list="dlCpty" value="${esc(DF.cpty)}" placeholder="Все получатели" onchange="DF.cpty=this.value.trim();render()"><datalist id="dlCpty">${cptyList().map(x=>`<option value="${esc(x)}">`).join("")}</datalist></label>
+    ${nf?`<button type="button" class="btn ghost" onclick="Object.assign(DF,{type:'',org:'',from:'',to:'',dept:'',cpty:''});render()">Сбросить</button>`:""}
   </div>`:""}
   <div class="panel"><header><h2>${list.length} ${plural(list.length,"документ","документа","документов")}</h2>${list.length>DOCLIM?`<span class="hint">показаны первые ${DOCLIM}</span>`:""}<div style="flex:1"></div>${colsMenu()}<button type="button" class="btn" onclick="exportDocs()">Выгрузить в Excel</button></header>
   <div class="body flush"><div class="tbl-wrap"><table id="tDocs" class="list-t">
@@ -100,7 +112,7 @@ function viewDocs(){
       ${DOCHIDE.has("wallet")?"":`<td>${esc(docWallets(d))}</td>`}${DOCHIDE.has("cpty")?"":`<td>${esc(docCpty(d))}</td>`}
       <td class="num ${sg<0?"neg":sg>0?"pos":""}">${P?fmt(d.from.sum):fmtS(sg*docVisTotal(d))}<div class="sub">${P?`${esc(curCode(acc(d.from.acc)?.cur))} → ${esc(curCode(acc(d.to.acc)?.cur))}`:esc(curCode(d.cur))}</div></td>
       ${DOCHIDE.has("state")?"":`<td>${docStateTag(d)}${needsReview(d)&&d.review?`<div class="sub amber">${(d.review.diff||[]).slice(0,3).map(x=>`${esc(FIELD_LABELS[x.f]||x.f)}: ${esc(String(x.before??"—"))} → ${esc(String(x.after??"—"))}`).join("; ")}${(d.review.diff||[]).length>3?" …":""}</div>`:""}</td>`}</tr>`; }).join("")
-      || `<tr><td colspan="7" class="empty-cell">Под фильтры не попал ни один документ.${nf||DF.q||DF.state||DF.src?`<br><button type="button" class="btn sm" style="margin-top:10px" onclick="Object.assign(DF,{src:'',type:'',org:'',from:'',to:'',q:'',state:''});render()">Сбросить фильтры</button>`:""}</td></tr>`}</tbody></table></div>
+      || `<tr><td colspan="7" class="empty-cell">Под фильтры не попал ни один документ.${nf||DF.q||DF.state||DF.src?`<br><button type="button" class="btn sm" style="margin-top:10px" onclick="Object.assign(DF,{src:'',type:'',org:'',from:'',to:'',dept:'',cpty:'',q:'',state:''});render()">Сбросить фильтры</button>`:""}</td></tr>`}</tbody></table></div>
     ${list.length>DOCLIM?`<div class="body row"><button class="btn" onclick="DOCLIM+=500;render()">Показать ещё 500</button><button class="btn ghost" onclick="DOCLIM=1e9;render()">Показать все</button></div>`:""}</div></div>`;
 }
 function plural(n, one, few, many){ const a = Math.abs(n)%100, b = a%10; if(LANG==="en") return many; if(a>10&&a<20) return many; if(b>1&&b<5) return few; if(b===1) return one; return many; }
@@ -216,7 +228,33 @@ function reviewBlock(d){
     <div class="row">${can?`<button class="btn primary" onclick="confirmReview('${d.id}')">Подтвердить изменения</button><span>Реквизиты ERP правятся только в ERP; распределение по кошелькам можно поправить ниже (ТР-87).</span>`
       :`<span>Проверяет казначей кошелька из строк документа; без кошелька — фин. контролер или администратор.</span>`}</div></div>`;
 }
-const FIELD_LABELS = {date:"Дата", org:"Организация", acc:"Счёт", cur:"Валюта", status:"Состояние", approved:"Согласование", sum:"Сумма", dept:"Подразделение", cf:"Тип расхода CF", zone:"Зона", cpty:"Получатель", counted:"В расчёте"};
+const FIELD_LABELS = {f_posted:"Проведён", f_approved:"Согласован", f_deleted:"Помечен на удаление", f_bank:"Проведено банком", dup:"Двойной учёт", flags:"Признаки ERP", date:"Дата", org:"Организация", acc:"Счёт", cur:"Валюта", status:"Состояние", approved:"Согласование", sum:"Сумма", dept:"Подразделение", cf:"Тип расхода CF", zone:"Зона", cpty:"Получатель", counted:"В расчёте"};
+/** ДР-05: противоречие признака «Проведено банком» и даты проведения банком */
+function conflictBlock(d){
+  if(!d.ev || !d.ev.conflict || d.excluded) return "";
+  return `<div class="alert warn"><b>Требует проверки: противоречие данных ERP (ДР-05).</b> ${esc(d.ev.conflict)}. Пока противоречие не устранено в ERP, документ в фактический остаток (Кф) не входит. После исправления признака или даты в ERP и повторной загрузки отметка снимется автоматически.</div>`;
+}
+/** ДР-01: результат проверки на двойной учёт и решение казначея */
+function dupBlock(d){
+  const x = d.dupInfo; if(!x) return "";
+  const can = (DB.perms.dup||[]).includes(d.id);
+  const m = x.manual;
+  const mtxt = c => `<a class="lnk" onclick="closeModal();openDoc('${c.id}')">${esc(c.no||"ручная операция")}</a> от ${fmtD(c.date)} · ${fmt(c.sum)}`;
+  const pending = DUP_PENDING.has(x.st);
+  return `<div class="alert ${pending?"warn":"info"}"><b>Защита от двойного учёта (ТР-70)${pending?" — требует проверки":""}.</b> ${esc(x.res)}${x.by==="id"?" (по номеру документа ERP)":x.by==="auto"?" (по счёту, валюте, сумме и дате)":x.by==="treasurer"?` — решение казначея ${esc(x.u||"")}, ${fmtDT(x.t)}`:""}.
+    ${m && x.st==="matched"?`<div style="margin-top:4px">Ручная операция: ${mtxt(m)}. Движение учтено по ней, документ ERP повторного движения не создаёт.</div>`:""}
+    ${pending?`<div style="margin-top:4px">До решения казначея документ в расчёт остатков не входит.</div>`:""}
+    ${can && pending ? `<div style="margin-top:8px">${(x.cands||[]).length?`<div class="muted" style="margin-bottom:4px">Подходящие ручные операции (тот же счёт, валюта и сумма, дата ±3 дня):</div>${x.cands.map(c=>`<div class="row" style="gap:8px;margin-bottom:4px">${mtxt(c)} <button class="btn sm" onclick="dupDecide('${d.id}','link','${c.id}')">Это одна операция</button></div>`).join("")}`:`<div class="muted">Подходящих ручных операций нет.</div>`}
+      <div class="row" style="margin-top:6px"><button class="btn sm primary" onclick="dupDecide('${d.id}','accept')">Ручной операции нет — учесть движение по документу</button></div></div>` : ""}
+    ${can && !pending && x.by==="treasurer" ? `<div class="row" style="margin-top:6px"><button class="btn sm ghost" onclick="dupDecide('${d.id}','reset')">Вернуть на проверку</button></div>`:""}
+    ${!can && pending ? `<div class="muted" style="margin-top:4px">Решает казначей кошелька из строк документа; без кошелька — фин. контролер или администратор.</div>`:""}</div>`;
+}
+async function dupDecide(id, action, manual){
+  if(action==="accept" && !confirm("Подтвердите: ручной операции по этому документу нет, движение учитывается по документу ERP.")) return;
+  const r = await mutate(`/api/docs/${encodeURIComponent(id)}/dup`, {action, manual});
+  if(!r.ok) return showErrors(r);
+  closeModal(); toast(action==="link" ? "Сопоставлено с ручной операцией — повторного движения нет" : action==="accept" ? "Движение учтено по документу" : "Документ возвращён на проверку", {lvl:"ok"});
+}
 async function confirmReview(id){
   const r = await mutate(`/api/docs/${encodeURIComponent(id)}/confirm`, {});
   if(!r.ok) return showErrors(r);
@@ -226,7 +264,10 @@ const fixedTag = on => on ? ` <span class="tag warn" title="Исправлено
 function fileDocBody(){
   const d = ED; const can = fileLinesEditable(); const u = me(); const a = acc(d.acc); const fx = new Set(d.fixed||[]);
   const hist = d.fmt==="hist";
-  return `${EDerr?`<div class="alert err">${EDerr.map(esc).join("<br>")}</div>`:""}${reviewBlock(byId(DB.docs,d.id)||d)}
+  const D0 = byId(DB.docs,d.id)||d; const ev = D0.ev || {flags:{}, missing:[]}; const F = ev.flags||{};
+  const flagDd = k => `<span class="${F[k]==null?"muted":F[k]===false&&k!=="deleted"?"neg":""}">${triText(F[k])}</span>`;
+  return `${EDerr?`<div class="alert err">${EDerr.map(esc).join("<br>")}</div>`:""}${reviewBlock(D0)}${conflictBlock(D0)}${dupBlock(D0)}
+  ${ev.missing && ev.missing.length && !d.excluded?`<div class="alert">Нет данных ERP: <b>${ev.missing.map(k=>esc(FLAG_NAMES[k])).join(", ")}</b>. ${docCounts(D0)?"":"До получения этих сведений документ не формирует движение в расчёте остатков (ДР-07)."} Признаки загружаются по GUID: «Загрузка файлов» → «Признаки документов ERP».</div>`:""}
   ${d.excluded?`<div class="alert err">Документ исключён из расчёта: его нет в последней загрузке за его период (ТР-62).</div>`:""}
   ${!can && canEnter(u) && !d.excluded ? `<div class="alert warn">${esc(periodError(d.date)||"")}</div>`:""}
   <div class="grid2">
@@ -237,15 +278,18 @@ function fileDocBody(){
       <dt>Хозяйственная операция</dt><dd>${esc(d.op||"—")}</dd>
       <dt>Состояние</dt><dd>${docStateTag(d)}</dd>
       ${hist||d.stage?`<dt>Текущий этап ERP</dt><dd class="notr">${esc(d.stage||"—")}${fixedTag(fx.has("stage"))}</dd>`:""}
-      ${d.fmt==="erp17" ? `<dt>Признаки ERP</dt><dd>${d.statusRaw?`<span class="notr">${esc(d.statusRaw)}</span>`:`<span class="muted" title="Признаки согласования, проведения и пометки на удаление в 17 полей отчёта не входят — поступят через интеграцию (ТР-91)">не переданы (ТР-91) — документ отчёта считается проведённым</span>`}</dd>`
-        : `<dt>${hist?"Текущее состояние ERP":"Статус 1С"}</dt><dd class="notr">${esc(d.statusRaw||d.status)}${fixedTag(fx.has("state")||fx.has("status"))}</dd>`}
+      ${hist?`<dt>Текущее состояние ERP</dt><dd class="notr">${esc(d.statusRaw||d.status||"—")}${fixedTag(fx.has("state")||fx.has("status"))}</dd>`:""}
+      <dt>Проведён</dt><dd>${flagDd("posted")}</dd>
+      ${d.type==="СБДС"?`<dt>Согласован</dt><dd>${flagDd("approved")}</dd>`:""}
+      <dt>Помечен на удаление</dt><dd>${flagDd("deleted")}</dd>
+      ${d.type==="СБДС"?`<dt>Проведено банком</dt><dd>${flagDd("bank")} <span class="muted" style="font-size:11.5px">· признак ERP по GUID (ТР-09, ДР-05)</span></dd>`:""}
       ${d.type==="СБДС"?`<dt>Учёт (ТР-07)</dt><dd>${opsAccount(d)}</dd>`:""}</dl>
     <dl class="kv"><dt>Организация</dt><dd>${esc(nm(org(d.org)))}${fixedTag(fx.has("org"))}</dd>
       <dt>${a&&a.kind==="Касса"?"Касса":"Банковский счёт"}</dt><dd>${esc(nm(a))}${fixedTag(fx.has("acc"))}${d.accNo||d.bankName?`<div class="sub notr">${esc([d.bankName, d.accNo].filter(Boolean).join(" · "))}</div>`:""}</dd>
       <dt>Валюта</dt><dd>${esc(curCode(d.cur))}${fixedTag(fx.has("cur"))}</dd>
       ${d.docSum!=null?`<dt>Сумма документа</dt><dd class="num" style="text-align:left">${fmt(d.docSum)} ${esc(curCode(d.cur))}${fixedTag(fx.has("docSum"))}</dd>`:""}
       ${d.rate?`<dt>Курс документа</dt><dd>${fmtRate(d.rate)} ${esc(curCode(d.cur))} за 1 USD${fixedTag(fx.has("rate"))}</dd>`:""}
-      ${d.type==="СБДС"?`<dt>Дата проведения банком</dt><dd>${d.bankDate?fmtD(d.bankDate):`<span class="tag warn">Не исполнен банком</span>`}${fixedTag(fx.has("bankDate"))}</dd>`:""}
+      ${d.type==="СБДС"?`<dt>Дата проведения банком</dt><dd>${d.bankDate?fmtD(d.bankDate):""} <span class="muted" style="font-size:11.5px">· из отчёта ERP, вручную не меняется (ТР-84)</span></dd>`:""}
       <dt>Загружен</dt><dd>${fmtDT(d.loaded)} <span class="muted">${esc(d.fileName||"")}</span></dd></dl>
   </div>
   <fieldset style="margin-top:12px"><legend>Расшифровка платежа — кошелёк по каждой строке (ТР-54)</legend>
