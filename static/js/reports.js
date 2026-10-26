@@ -3,7 +3,7 @@
    11. ОТЧЁТЫ (раздел 9)
    ============================================================ */
 const RF = {
-  rep37:{date:"", byOrg:false, byAcc:false, byCur:false, zero:false},
+  rep37:{date:"", byOrg:false, byAcc:false, byCur:false, zero:false, wallets:[]},
   rep75:{date:"", wallets:[], sub:true},
   rep38:{from:"", to:"", step:"month", wallets:[], sub:true, cur:""},
   rep40:{date:""},
@@ -14,6 +14,20 @@ let DRILLS = [];
 const drillLink = (fn, html) => { DRILLS.push(fn); return `<a class="lnk" onclick="DRILLS[${DRILLS.length-1}]()">${html}</a>`; };
 const repDate = F => F.date || CUR.date;
 
+/** ДР-02-23.10: применённые курсы ERP на дату отчёта — курс, его дата, источник и актуальность */
+function ratesPanel(curs, date){
+  const L = [...new Set(curs)].filter(c=>c && !isUSD(c)).sort((a,b)=>curCode(a).localeCompare(curCode(b)));
+  if(!L.length) return "";
+  const I = L.map(c=>[c, rateInfo(c,date)]); const bad = I.filter(([c,i])=>i.st!=="ok");
+  return `<details class="panel rates-panel" ${bad.length?"open":""}><summary><b>Курсы для пересчёта в USD на ${fmtD(date)}</b> · источник — справочник курсов ERP (ТР-58)${bad.length?` · <span class="amber">предварительный расчёт: ${bad.length} ${plural(bad.length,"валюта","валюты","валют")}</span>`:""}</summary>
+    <div class="body flush"><table class="mini"><thead><tr><th>Валюта</th><th class="num">Курс, единиц за 1 USD</th><th>Дата курса</th><th>Нужен курс на</th><th>Статус</th></tr></thead><tbody>
+    ${I.map(([c,i])=>`<tr><td>${esc(curCode(c))}</td><td class="num">${i.rate?fmtRate(i.rate):"—"}</td><td>${i.date?fmtD(i.date):"—"}</td><td>${fmtD(i.need)}${i.need!==date?` <span class="muted">(выходной — курс последнего рабочего дня)</span>`:""}</td>
+      <td>${i.st==="ok"?`<span class="tag ok">актуален</span>`:i.st==="prelim"?`<span class="tag warn">предварительный расчёт</span>`:`<span class="tag off">нет курса — USD не считается</span>`}</td></tr>`).join("")}</tbody></table>
+    <p class="muted" style="padding:8px 12px;margin:0">Остатки в USD не пересчитываются; остатки в других валютах пересчитываются по курсу ERP на дату отчёта (для выходных — на последний рабочий день по календарю Daily Balance). Если курса на эту дату нет, USD-показатели считаются по последнему доступному курсу и помечены «≈» — предварительный расчёт; после загрузки курсов отчёт пересчитается сам. Курс платёжного документа для остатков не используется.</p></div></details>`;
+}
+function prelimBanner(u){ const m = usdMark(u); if(!m.cls) return "";
+  const parts = [(u.prelim||[]).length?`курсы ERP на дату отчёта не получены — USD посчитан по последним доступным: ${u.prelim.join(", ")}`:"", (u.miss||[]).length?`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана`:""].filter(Boolean);
+  return `<div class="alert warn"><b>${(u.miss||[]).length?"Неполный итог в USD":"Предварительный расчёт в USD"}</b> (помечено «≈»): ${esc(parts.join("; "))}. Загрузите курсы ERP («Загрузка файлов» → «Справочники и курсы») — отчёт пересчитается сам.</div>`; }
 /** Дерево видимых кошельков: родитель — ближайший видимый предок */
 function visibleTree(){
   const V = visibleWallets();
@@ -37,7 +51,7 @@ function showFacts(title, pred){
       <button class="btn sm" onclick="exportTable('factsTbl','Документы')">Выгрузить в Excel</button></div>
     <div class="tbl-wrap"><table id="factsTbl" class="sortable"><thead><tr><th>Дата</th><th>Документ</th><th>Организация</th><th>Счёт или касса</th><th>Кошелёк</th><th>Тип расхода CF / вид</th><th class="num">Сумма</th><th>Вал.</th><th class="num">USD</th></tr></thead>
     <tbody>${list.map(f=>`<tr class="clickable" onclick="openSrc('${f.src.k}','${f.src.id}')">
-      <td>${fmtD(f.docDate||f.date)}${f.sbds?`<div class="sub">${f.date!==FAR?`банк ${fmtD(f.date)}`:f.kp!==FAR?`<span class="tag info">Писх</span>`:`<span class="tag warn">не исполнен</span>`}</div>`:""}</td><td><a class="lnk">${esc(srcTitle(f))}</a></td><td>${esc(nm(org(f.org)))}</td><td>${esc(nm(acc(f.acc)))}</td>
+      <td>${fmtD(f.docDate||f.date)}${f.sbds?`<div class="sub">${f.date!==FAR?`банк ${fmtD(f.date)}`:f.kp!==FAR?`<span class="tag info">Писх</span>`:`<span class="tag">не в Кф</span>`}</div>`:""}</td><td><a class="lnk">${esc(srcTitle(f))}</a></td><td>${esc(nm(org(f.org)))}</td><td>${esc(nm(acc(f.acc)))}</td>
       <td>${f.wallet?esc(nm(wal(f.wallet))):`<span class="tag warn">без кошелька</span>`}</td>
       <td>${f.cat==="internal"?esc(OP_KINDS[f.kind].name):f.cat==="transfer"?esc(f.op):f.cat==="opening"?"Входящий остаток":esc(refName(DB.cfTypes,f.cf))}</td>
       <td class="num ${f.sum<0?"neg":"pos"}">${fmtS(f.sum)}</td><td>${esc(curCode(f.cur))}</td><td class="num ${f.usd<0?"neg":""}">${fmtS(f.usd)}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Нет записей</td></tr>`}</tbody></table></div>`; }});
@@ -56,9 +70,14 @@ function emptyHint(){
 let R37C = new Set();   // свёрнутые кошельки
 function tog37(id){ R37C.has(id) ? R37C.delete(id) : R37C.add(id); render(); }
 const KFKP_HELP = "Кф — фактический расчётный остаток: всё, что исполнено банком. Кп — плановый: Кф за вычетом исходящих платежей, которые казначей подтвердил как отправленные, но банк ещё не списал (Кп = Кф − Писх, ТР-07).";
+function toggle37(id,on){ const a = RF.rep37.wallets; RF.rep37.wallets = on ? [...new Set([...a,id])] : a.filter(x=>x!==id); render(); }
 function viewRep37(){
   DRILLS = []; const F = RF.rep37; const date = repDate(F);
-  const list = visFacts(); const bad = badAccs();
+  // ДР-01-23.10: фильтр «Кошелёк» — выбранный кошелёк вместе с доступными дочерними; дочерний можно выбрать без родителя; «Без кошелька» — служебная группа
+  const SEL = F.wallets && F.wallets.length ? new Set() : null;
+  if(SEL) F.wallets.forEach(id=>{ if(id!==NOWAL) descendants(id).forEach(x=>{ if(visibleWallets().has(x)) SEL.add(x); }); });
+  const selNW = !SEL || F.wallets.includes(NOWAL);
+  const list = visFacts().filter(f=>f.wallet ? (!SEL || SEL.has(f.wallet)) : selNW); const bad = badAccs();
   const split = F.byOrg || F.byAcc;
   const keyOf = f => [F.byOrg?f.org:"", F.byAcc?f.acc:"", f.cur].join("|");
   const agg = pred => { const kf={}, kp={}, parts=new Map(); let neg=false, hasBad=false;
@@ -68,24 +87,28 @@ function viewRep37(){
       if(split){ const k = keyOf(f); let p = parts.get(k); if(!p){ p={org:f.org, acc:f.acc, cur:f.cur, kf:0, kp:0}; parts.set(k,p);} if(inF) p.kf+=f.sum; if(inP) p.kp+=f.sum; } });
     balances(date, list.filter(pred)).forEach(r=>{ if(r.sum < -0.005 || r.kp < -0.005) neg = true; });
     return {kf, kp, ukf:usdOf(kf,date), ukp:usdOf(kp,date), parts:[...parts.values()], neg, hasBad}; };
-  const V = visibleWallets(); const T = visibleTree();
+  const V = visibleWallets();
+  // в дереве — только выбранные кошельки; дочерний без выбранного родителя поднимается на верхний уровень
+  const T = SEL ? tree(DB.wallets.filter(w=>SEL.has(w.id)).map(w=>{ let p = wal(w.parent); while(p && !SEL.has(p.id)) p = wal(p.parent); return Object.assign({}, w, {parent:p?p.id:null}); })) : visibleTree();
   const kids = new Set(T.map(w=>w.parent).filter(Boolean));
   const hiddenBy = w => { let p = T.find(x=>x.id===w.parent); while(p){ if(R37C.has(p.id)) return true; p = T.find(x=>x.id===p.parent); } return false; };
-  const rows = T.map(w=>{ const S = descendants(w.id); return {w, a:agg(f=>f.wallet && S.has(f.wallet) && V.has(f.wallet)), pred:f=>f.wallet && S.has(f.wallet), hidden:hiddenBy(w)}; });
-  const noW = seesNoWallet(me()) ? agg(f=>!f.wallet) : null;
+  const rows = T.map(w=>{ const S = descendants(w.id); return {w, a:agg(f=>f.wallet && S.has(f.wallet) && V.has(f.wallet)), pred:f=>f.wallet && S.has(f.wallet) && (!SEL || SEL.has(f.wallet)), hidden:hiddenBy(w)}; });
+  const noW = seesNoWallet(me()) && selNW ? agg(f=>!f.wallet) : null;
   const tot = agg(()=>true);
   const curs = [...new Set([...Object.keys(tot.kf), ...Object.keys(tot.kp)])].filter(c=>Math.abs(tot.kf[c]||0)>=0.005 || Math.abs(tot.kp[c]||0)>=0.005 || F.zero)
     .sort((a,b)=>(isUSD(b)-isUSD(a)) || curCode(a).localeCompare(curCode(b)));
-  const cell = (v, cls="") => Math.abs(v||0)<0.005 ? `<td class="num muted ${cls}">—</td>` : `<td class="num ${cls} ${v<0?"neg":""}">${fmt(r2(v))}</td>`;
+  const cell = (v, cls="", u=null) => { const m = u ? usdMark(u) : {cls:"",pre:"",title:""};
+    return Math.abs(v||0)<0.005 && !m.cls ? `<td class="num muted ${cls}">—</td>` : `<td class="num ${cls} ${m.cls} ${v<0?"neg":""}" ${m.title?`title="${esc(m.title)}"`:""}>${m.pre}${fmt(r2(v||0))}</td>`; };
   const curCells = a => curs.map(c=>cell(a.kf[c],"kf")+cell(a.kp[c],"kp")).join("");
   const partRows = (a, pred, lvl) => a.parts.filter(p=>F.zero || Math.abs(p.kf)>=0.005 || Math.abs(p.kp)>=0.005).sort((x,y)=>(nm(org(x.org))+nm(acc(x.acc))+curCode(x.cur)).localeCompare(nm(org(y.org))+nm(acc(y.acc))+curCode(y.cur),"ru")).map(p=>{
-    const k = rateAt(p.cur,date); const uf = k ? r2(p.kf/k) : NaN, up = k ? r2(p.kp/k) : NaN;
+    const RI = rateInfo(p.cur,date); const k = RI.rate; const uf = k ? r2(p.kf/k) : NaN, up = k ? r2(p.kp/k) : NaN;
+    const pu = {miss: k?[]:[curCode(p.cur)], prelim: RI.st==="prelim"?[`${curCode(p.cur)} от ${fmtD(RI.date)}`]:[]};
     const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?posLabel(p.acc,p.cur):""].filter(Boolean).join(" · ");
     const isBad = F.byAcc && bad.has(p.acc);
     const pr = f=>pred(f) && (!F.byOrg||f.org===p.org) && (!F.byAcc||f.acc===p.acc) && f.cur===p.cur;
     return `<tr class="part ${isBad?"bad":""}"><td style="padding-left:${lvl*20+44}px">${drillLink(()=>showFacts(label, f=>pr(f) && (f.date<=date || (f.kp||f.date)<=date)), esc(label))}
       ${isBad?` <span class="tag off" title="ТР-42">расхождение</span>`:""}</td>
-      ${curs.map(c=>c===p.cur?cell(p.kf,"kf")+cell(p.kp,"kp"):`<td></td><td></td>`).join("")}${cell(uf,"kf usd")}${cell(up,"kp usd")}</tr>`;
+      ${curs.map(c=>c===p.cur?cell(p.kf,"kf")+cell(p.kp,"kp"):`<td></td><td></td>`).join("")}${k?cell(uf,"kf usd",pu)+cell(up,"kp usd",pu):`<td class="num muted" title="нет курса ERP">—</td><td class="num muted" title="нет курса ERP">—</td>`}</tr>`;
   }).join("");
   const line = (w, label, a, pred, lvl, cls="") => {
     const has = w && kids.has(w.id); const closed = has && R37C.has(w.id);
@@ -93,14 +116,16 @@ function viewRep37(){
     return `<tr class="${cls}"><td style="padding-left:${lvl*20+14}px"><span class="tw">${has?`<button type="button" class="twist ${closed?"":"open"}" aria-expanded="${!closed}" aria-label="${closed?"Развернуть":"Свернуть"}" onclick="event.stopPropagation();tog37('${w.id}')"></button>`:`<span class="twist-sp"></span>`}
         ${drillLink(()=>showFacts(label, f=>pred(f) && (f.date<=date || (f.kp||f.date)<=date)), esc(label))}</span>
         ${a.neg?` <span class="tag off">есть минус</span>`:""}${a.hasBad?` <span class="tag off" title="ТР-42">счёт с расхождением</span>`:""}${miss.length?` <span class="tag warn">нет курса ${esc(miss.join(", "))}</span>`:""}</td>
-      ${curCells(a)}${cell(a.ukf.usd,"kf usd")}${cell(a.ukp.usd,"kp usd")}</tr>` + (split && !closed ? partRows(a,pred,lvl) : ""); };
+      ${curCells(a)}${cell(a.ukf.usd,"kf usd",a.ukf)}${cell(a.ukp.usd,"kp usd",a.ukp)}</tr>` + (split && !closed ? partRows(a,pred,lvl) : ""); };
   const allIds = [...kids];
   return `${repHeader("Деньги по кошелькам на дату","ТР-37",`Остаток каждого кошелька по иерархии: родитель включает подчинённые. ${KFKP_HELP} Остаток в USD = остаток в валюте ÷ курс ERP на дату отчёта (ТР-58). Нажмите на название, чтобы увидеть документы.`)}
   ${emptyHint()}
+  ${prelimBanner({miss:[...new Set([...tot.ukf.miss, ...tot.ukp.miss])], prelim:[...new Set([...tot.ukf.prelim, ...tot.ukp.prelim])]})}
   <div class="toolbar">
     <label class="fld"><span>На дату</span><input type="date" value="${date}" onchange="RF.rep37.date=this.value;render()"></label>
     <div class="fld"><span>Разбить по</span><div class="chips">
       ${chip(F.byOrg,"RF.rep37.byOrg=!RF.rep37.byOrg;render()","юрлицам")}${chip(F.byAcc,"RF.rep37.byAcc=!RF.rep37.byAcc;render()","позициям (счёт × валюта)")}</div></div>
+    ${walletPicker("w37", F.wallets, "toggle37", {label:"Кошелёк", all:"Все доступные", noWallet:true, onAll:"RF.rep37.wallets=allWalletsSel();render()", onClear:"RF.rep37.wallets=[];render()"})}
     <div class="fld"><span>Показать</span><div class="chips">${chip(F.zero,"RF.rep37.zero=!RF.rep37.zero;render()","нулевые")}</div></div>
     <div class="grow"></div>
     ${allIds.length?`<div class="row tb-actions"><button type="button" class="btn ghost" onclick="R37C=new Set();render()">Развернуть всё</button><button type="button" class="btn ghost" onclick="R37C=new Set(${esc(JSON.stringify(allIds))});render()">Свернуть всё</button></div>`:""}
@@ -110,10 +135,11 @@ function viewRep37(){
     <thead><tr><th rowspan="2">Кошелёк</th>${curs.map(c=>`<th class="num grp-h" colspan="2">${esc(curCode(c))}</th>`).join("")}<th class="num grp-h" colspan="2">Итого, USD</th></tr>
       <tr>${[...curs, "usd"].map(()=>`<th class="num kf" title="Фактический расчётный остаток">Кф</th><th class="num kp" title="Плановый остаток: Кф − Писх">Кп</th>`).join("")}</tr></thead>
     <tbody>
-      ${rows.filter(r=>!r.hidden).map(r=>line(r.w, r.w.name, r.a, r.pred, r.w._lvl, r.w._lvl?"":"grp")).join("") || `<tr><td colspan="${curs.length*2+3}" class="muted">Нет доступных кошельков</td></tr>`}
-      ${noW && [...Object.values(noW.kf), ...Object.values(noW.kp)].some(v=>Math.abs(v)>=0.005) ? line(null, "Без кошелька", noW, f=>!f.wallet, 0, "grp nowallet") : ""}
-      <tr class="tot"><td>Итого</td>${curCells(tot)}${cell(tot.ukf.usd,"kf usd")}${cell(tot.ukp.usd,"kp usd")}</tr>
-    </tbody></table></div></div></div>`;
+      ${rows.filter(r=>!r.hidden).map(r=>line(r.w, r.w.name, r.a, r.pred, r.w._lvl, r.w._lvl?"":"grp")).join("") || (SEL&&!SEL.size?"":`<tr><td colspan="${curs.length*2+3}" class="muted">Нет доступных кошельков</td></tr>`)}
+      ${noW && ([...Object.values(noW.kf), ...Object.values(noW.kp)].some(v=>Math.abs(v)>=0.005) || (SEL && selNW)) ? line(null, "Без кошелька", noW, f=>!f.wallet, 0, "grp nowallet") : ""}
+      <tr class="tot"><td>Итого${SEL?` <span class="muted" style="font-weight:400">по выбранным</span>`:""}</td>${curCells(tot)}${cell(tot.ukf.usd,"kf usd",tot.ukf)}${cell(tot.ukp.usd,"kp usd",tot.ukp)}</tr>
+    </tbody></table></div></div></div>
+  ${ratesPanel(curs, date)}`;
 }
 
 /** «Выбрать все»: верхние кошельки и служебная группа «Без кошелька» (ДР-10) */
@@ -134,20 +160,23 @@ function viewRep75(){
   const rows = [...m.values()].filter(r=>Math.abs(r.kf)>=0.005 || Math.abs(r.kp)>=0.005);
   const bad = badAccs();
   const orgs = [...new Set(rows.map(r=>r.org))].sort((a,b)=>nm(org(a)).localeCompare(nm(org(b)),"ru"));
-  const gF = {v:0}, gP = {v:0}; const missing = new Set();
-  const usdCell = v => `<td class="num ${v<0?"neg":""}">${fmt(r2(v))}</td>`;
+  const gF = {v:0}, gP = {v:0}; const missing = new Set(); const pre75 = new Set();
+  const usdCell = (v, u) => { const m = u ? usdMark(u) : {cls:"",pre:"",title:""}; return !isFinite(v) ? `<td class="num muted" title="нет курса ERP — USD не считается">—</td>` : `<td class="num ${m.cls} ${v<0?"neg":""}" ${m.title?`title="${esc(m.title)}"`:""}>${m.pre}${fmt(r2(v))}</td>`; };
+  const uOf = set => ({miss:[...missing], prelim:[...set]});
   const body = orgs.map(o=>{
     const rs = rows.filter(r=>r.org===o).sort((a,b)=>nm(acc(a.acc)).localeCompare(nm(acc(b.acc)),"ru"));
-    let sF = 0, sP = 0; const closed = R75C.has(o);
-    const html = rs.map(r=>{ const k = rateAt(r.cur,date); const uf = k?r2(r.kf/k):NaN, up = k?r2(r.kp/k):NaN; if(k){ sF += r.kf/k; sP += r.kp/k; } else missing.add(curCode(r.cur));
+    let sF = 0, sP = 0; const closed = R75C.has(o); const preO = new Set(); const missO = new Set();
+    const html = rs.map(r=>{ const RI = rateInfo(r.cur,date); const k = RI.rate; const uf = k?r2(r.kf/k):NaN, up = k?r2(r.kp/k):NaN;
+      if(k){ sF += r.kf/k; sP += r.kp/k; if(RI.st==="prelim"){ const t = `${curCode(r.cur)} от ${fmtD(RI.date)}`; preO.add(t); pre75.add(t); } } else { missing.add(curCode(r.cur)); missO.add(curCode(r.cur)); }
+      const ru = {miss:[], prelim: RI.st==="prelim" ? [`${curCode(r.cur)} от ${fmtD(RI.date)}`] : []};
       if(closed) return "";
       const a = acc(r.acc);
       return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:40px">${drillLink(()=>showFacts(nm(a), f=>inSel(f)&&f.acc===r.acc&&f.cur===r.cur&&(f.date<=date||(f.kp||f.date)<=date)), esc(nm(a)))}
         <span class="muted">${a?esc(a.kind==="Касса"?"касса":(a.accType||"счёт").toLowerCase()):""}</span>${bad.has(r.acc)?` <span class="tag off">расхождение</span>`:""}</td>
-        <td>${esc(curCode(r.cur))}</td><td class="num kf ${r.kf<0?"neg":""}">${fmt(r2(r.kf))}</td><td class="num kp ${r.kp<0?"neg":""}">${fmt(r2(r.kp))}</td>${usdCell(uf)}${usdCell(up)}
+        <td>${esc(curCode(r.cur))}</td><td class="num kf ${r.kf<0?"neg":""}">${fmt(r2(r.kf))}</td><td class="num kp ${r.kp<0?"neg":""}">${fmt(r2(r.kp))}</td>${usdCell(uf,ru)}${usdCell(up,ru)}
         <td class="muted" style="font-size:11px">${Object.entries(r.byW).filter(([w,v])=>Math.abs(v)>=0.005).map(([w,v])=>`${esc(wpName(w))}: ${fmt(r2(v))}`).join("; ")}</td></tr>`; }).join("");
     gF.v += sF; gP.v += sP;
-    return `<tr class="grp"><td colspan="4"><span class="tw"><button type="button" class="twist ${closed?"":"open"}" aria-expanded="${!closed}" aria-label="${closed?"Развернуть":"Свернуть"}" onclick="tog75('${o}')"></button> ${esc(nm(org(o)))} <span class="muted">· ${rs.length} ${plural(rs.length,"счёт","счёта","счетов")}</span></span></td>${usdCell(sF)}${usdCell(sP)}<td></td></tr>` + html;
+    return `<tr class="grp"><td colspan="4"><span class="tw"><button type="button" class="twist ${closed?"":"open"}" aria-expanded="${!closed}" aria-label="${closed?"Развернуть":"Свернуть"}" onclick="tog75('${o}')"></button> ${esc(nm(org(o)))} <span class="muted">· ${rs.length} ${plural(rs.length,"счёт","счёта","счетов")}</span></span></td>${usdCell(sF,{miss:[...missO],prelim:[...preO]})}${usdCell(sP,{miss:[...missO],prelim:[...preO]})}<td></td></tr>` + html;
   }).join("");
   return `${repHeader("Расположение ДС","ТР-75",`Выберите один или несколько кошельков — отчёт покажет, в каких компаниях, на каких счетах и кассах и в какой валюте лежат их деньги. ${KFKP_HELP} Компании сворачиваются, как группировка в Excel.`)}
   ${emptyHint()}
@@ -159,13 +188,14 @@ function viewRep75(){
     ${orgs.length?`<div class="row tb-actions"><button type="button" class="btn ghost" onclick="R75C=new Set();render()">Развернуть все счета</button><button type="button" class="btn ghost" onclick="R75C=new Set(${esc(JSON.stringify(orgs))});render()">Свернуть все счета</button></div>`:""}
     ${exportBtn("t75","Расположение ДС")}
   </div>
-  ${missing.size?`<div class="alert warn">Нет курса на ${fmtD(date)} для: ${esc([...missing].join(", "))}. Загрузите курсы из 1С.</div>`:""}
+  ${prelimBanner(uOf(pre75))}
   <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none"><table id="t75" class="kfkp">
     <thead><tr><th rowspan="2">Компания / счёт или касса</th><th rowspan="2">Валюта</th><th class="num grp-h" colspan="2">Остаток в валюте</th><th class="num grp-h" colspan="2">Остаток, USD</th><th rowspan="2">В т.ч. по кошелькам (Кф)</th></tr>
       <tr><th class="num kf" title="Фактический расчётный остаток">Кф</th><th class="num kp" title="Плановый остаток: Кф − Писх">Кп</th><th class="num kf">Кф</th><th class="num kp">Кп</th></tr></thead>
     <tbody>${F.wallets.length ? (body || `<tr><td colspan="7" class="muted">У выбранных кошельков нет остатков на ${fmtD(date)}</td></tr>`) : `<tr><td colspan="7" class="empty-cell">Выберите один или несколько кошельков в поле «Кошельки» выше.<br><button type="button" class="btn sm" style="margin-top:10px" onclick="RF.rep75.wallets=allWalletsSel();render()">Показать все кошельки</button></td></tr>`}
-    ${F.wallets.length && body ? `<tr class="tot"><td colspan="4">Итого, USD</td>${usdCell(gF.v)}${usdCell(gP.v)}<td></td></tr>`:""}</tbody>
-  </table></div></div></div>`;
+    ${F.wallets.length && body ? `<tr class="tot"><td colspan="4">Итого, USD</td>${usdCell(gF.v,uOf(pre75))}${usdCell(gP.v,uOf(pre75))}<td></td></tr>`:""}</tbody>
+  </table></div></div></div>
+  ${F.wallets.length ? ratesPanel(rows.map(r=>r.cur), date) : ""}`;
 }
 
 /* ---------- ТР-38. Фактический ДДС с остатками ---------- */
@@ -196,15 +226,21 @@ function viewRep38(){
   // ТР-33: при выборе валюты — в валюте счёта и в USD; иначе — в USD
   const modes = inCur ? ["cur","usd"] : ["usd"];
   const val = (f,m) => m==="cur" ? f.sum : f.usd;
-  const balOf = (lst, d, m) => { const bc = {}; lst.forEach(f=>{ if(f.date<=d) bc[f.cur]=(bc[f.cur]||0)+f.sum; }); return m==="cur" ? r2(bc[F.cur]||0) : usdOf(bc,d).usd; };
+  // ДР-02-23.10: остатки в USD — по курсу ERP на дату (на выходной — на последний рабочий день); без курса на дату — «≈» предварительный расчёт
+  const U38 = {miss:new Set(), prelim:new Set()};
+  const balU = (lst, d) => { const bc = {}; lst.forEach(f=>{ if(f.date<=d) bc[f.cur]=(bc[f.cur]||0)+f.sum; }); const u = usdOf(bc,d); u.miss.forEach(x=>U38.miss.add(x)); u.prelim.forEach(x=>U38.prelim.add(x)); return u; };
+  const balOf = (lst, d, m) => { if(m==="cur"){ const bc = {}; lst.forEach(f=>{ if(f.date<=d && f.cur===F.cur) bc.v=(bc.v||0)+f.sum; }); return r2(bc.v||0); } return balU(lst, d).usd; };
+  const markOf = u => u ? usdMark(u) : {cls:"",pre:"",title:""};
   const inB = (f,b) => f.date>=b.s && f.date<=b.e;
   const cfIn = new Set(), cfOut = new Set(), trOps = new Set(), kinds = new Set(); let hasOpen=false;
   list.forEach(f=>{ if(f.date<from||f.date>to) return;
     if(f.cat==="in") cfIn.add(f.cf||""); else if(f.cat==="out") cfOut.add(f.cf||""); else if(f.cat==="transfer") trOps.add(f.op||""); else if(f.cat==="internal") kinds.add(f.kind); else if(f.cat==="opening") hasOpen=true; });
   const cols = B.map(b=>{ const c = {b};
-    modes.forEach(m=>{ const start = balOf(list, addDays(b.s,-1), m), end = balOf(list, b.e, m);
+    modes.forEach(m=>{ const us = m==="usd" ? balU(list, addDays(b.s,-1)) : null, ue = m==="usd" ? balU(list, b.e) : null;
+      const start = us ? us.usd : balOf(list, addDays(b.s,-1), m), end = ue ? ue.usd : balOf(list, b.e, m);
       const turn = list.filter(f=>inB(f,b)).reduce((s,f)=>s+val(f,m),0);
-      c[m] = {start, end, fx: m==="cur" ? 0 : r2(end-start-turn)}; });
+      const ufx = us && ue ? {miss:[...new Set([...us.miss, ...ue.miss])], prelim:[...new Set([...us.prelim, ...ue.prelim])]} : null;
+      c[m] = {start, end, fx: m==="cur" ? 0 : r2(end-start-turn), u:{start:us, end:ue, fx:ufx}}; });
     return c; });
   const sumBy = (b, pred, m) => r2(list.filter(f=>inB(f,b) && pred(f)).reduce((s,f)=>s+val(f,m),0));
   const total = (pred, m) => r2(list.filter(f=>f.date>=from && f.date<=to && pred(f)).reduce((s,f)=>s+val(f,m),0));
@@ -214,8 +250,9 @@ function viewRep38(){
       ${modes.map(m=>{ const t = total(pred,m); return `<td class="num ${t<0?"neg":""}"><b>${fmtS(t)}</b></td>`; }).join("")}</tr>`;
   const cfName = id => id ? refName(DB.cfTypes,id) : "Тип расхода CF не указан";
   const first = cols[0], last = cols[cols.length-1];
-  const balRow = (label, key, cls) => `<tr class="${cls}"><td>${label}</td>${cols.map(c=>modes.map(m=>`<td class="num ${c[m][key]<0?"neg":""}">${fmt(c[m][key])}</td>`).join("")).join("")}
-      ${modes.map(m=>`<td class="num">${fmt(key==="start" ? (first?first[m].start:0) : (last?last[m].end:0))}</td>`).join("")}</tr>`;
+  const mcell = (v, u, extra="") => { const k = markOf(u); return `<td class="num ${k.cls} ${v<0?"neg":""} ${extra}" ${k.title?`title="${esc(k.title)}"`:""}>${k.pre}${fmt(v)}</td>`; };
+  const balRow = (label, key, cls) => `<tr class="${cls}"><td>${label}</td>${cols.map(c=>modes.map(m=>mcell(c[m][key], c[m].u[key])).join("")).join("")}
+      ${modes.map(m=>{ const c = key==="start" ? first : last; return c ? mcell(c[m][key], c[m].u[key]) : `<td class="num">${fmt(0)}</td>`; }).join("")}</tr>`;
   const body = `
     ${balRow("Остаток на начало","start","grp")}
     ${hasOpen ? cellRow("Ввод входящих остатков", f=>f.cat==="opening") : ""}
@@ -226,9 +263,11 @@ function viewRep38(){
     ${trOps.size ? cellRow("Переброски и конвертации между счетами группы", f=>f.cat==="transfer", {cls:"grp"}) + [...trOps].map(o=>cellRow(o||"—", f=>f.cat==="transfer"&&f.op===o, {pad:18})).join("") : ""}
     ${cellRow("Внутренние операции между кошельками", f=>f.cat==="internal", {cls:"grp"})}
     ${[...kinds].map(k=>cellRow(OP_KINDS[k].name, f=>f.cat==="internal"&&f.kind===k, {pad:18})).join("")}
-    <tr><td title="ТР-58">Курсовая разница</td>${cols.map(c=>modes.map(m=>m==="cur"?`<td class="num muted">·</td>`:`<td class="num ${c.usd.fx<0?"neg":""}">${Math.abs(c.usd.fx)<0.005?`<span class="muted">·</span>`:fmtS(c.usd.fx)}</td>`).join("")).join("")}
+    <tr><td title="ТР-58: расчётная строка — денежных движений не создаёт, Кф/Кп в валюте счёта и сверку с банком не меняет">Курсовая разница</td>${cols.map(c=>modes.map(m=>{ if(m==="cur") return `<td class="num muted">·</td>`; const k = markOf(c.usd.u.fx);
+      return `<td class="num ${k.cls} ${c.usd.fx<0?"neg":""}" ${k.title?`title="${esc(k.title)}"`:""}>${Math.abs(c.usd.fx)<0.005&&!k.cls?`<span class="muted">·</span>`:k.pre+fmtS(c.usd.fx)}</td>`; }).join("")).join("")}
       ${modes.map(m=>m==="cur"?`<td class="num muted">·</td>`:`<td class="num"><b>${fmtS(r2(cols.reduce((s,c)=>s+c.usd.fx,0)))}</b></td>`).join("")}</tr>
     ${balRow("Остаток на конец","end","tot")}`;
+  const usedCurs = [...new Set(list.map(f=>f.cur))];
   // По кошелькам: иерархия за весь период (раздел 9)
   const V = visibleWallets(); const allVis = visFacts().filter(f=>!F.cur || f.cur===F.cur);
   const wRow = (w, lst) => {
@@ -250,7 +289,7 @@ function viewRep38(){
       <td class="num ${r.end<0?"neg":""}"><b>${fmt(r.end)}</b></td>${inCur?`<td class="num ${r.endUsd<0?"neg":""}">${fmt(r.endUsd)}</td>`:""}</tr>`;
   const curs = [...new Set([...DB.accounts,...DB.cashboxes].map(a=>a.cur))].filter(Boolean);
   const unit = inCur ? curCode(F.cur) : "USD";
-  return `${repHeader("Фактический ДДС с остатками","ТР-38",`Поступления со знаком «+», расходы со знаком «−». Обороты в USD — по курсам ERP на даты операций, остатки — по курсу на конец шага; разница показана строкой «Курсовая разница» (ТР-58). При выборе валюты отчёт показывает суммы в валюте счёта и в USD (ТР-33).`)}
+  return `${repHeader("Фактический ДДС с остатками","ТР-38",`Поступления со знаком «+», расходы со знаком «−». Обороты в USD — по курсам ERP на даты фактических операций (СБДС — на дату исполнения банком), остатки — по курсу ERP на конец шага; разница показана строкой «Курсовая разница» — она расчётная и денежных движений не создаёт (ТР-58). При выборе валюты отчёт показывает суммы в валюте счёта и в USD (ТР-33).`)}
   ${emptyHint()}
   <div class="toolbar">
     <label class="fld"><span>Период с</span><input type="date" value="${from}" onchange="RF.rep38.from=this.value;render()"></label>
@@ -263,6 +302,7 @@ function viewRep38(){
     ${exportBtn("t38","ДДС")}
   </div>
   ${B.length>=400?`<div class="alert warn">Слишком много колонок — показаны первые 400. Увеличьте шаг.</div>`:""}
+  ${prelimBanner({miss:[...U38.miss], prelim:[...U38.prelim]})}
   <div class="panel"><div class="body flush"><div class="tbl-wrap" style="max-height:none;overflow-x:auto"><table id="t38" class="sticky-first">
     <thead>${inCur?`<tr><th rowspan="2">Статья</th>${cols.map(c=>`<th class="num" colspan="2" style="text-align:center">${esc(c.b.label)}</th>`).join("")}<th class="num" colspan="2" style="text-align:center">Итого</th></tr>
       <tr>${[...cols,{}].map(()=>`<th class="num">${esc(unit)}</th><th class="num">USD</th>`).join("")}</tr>`
@@ -274,7 +314,8 @@ function viewRep38(){
     <tbody>${wRows.map(r=>wTr(r, r.w._lvl?"":"grp")).join("") || `<tr><td colspan="10" class="muted">Нет кошельков</td></tr>`}
       ${nwRow?wTr(nwRow, "grp nowallet"):""}
       ${wRows.length||nwRow?wTr(totRow, "tot"):""}</tbody></table></div></div></div>
-  <p class="muted" style="font-size:12px">Итого — по всем кошелькам верхнего уровня${nwRow?" и группе «Без кошелька»":""}: каждое движение входит в итог один раз (родитель уже включает подчинённых).</p>`;
+  <p class="muted" style="font-size:12px">Итого — по всем кошелькам верхнего уровня${nwRow?" и группе «Без кошелька»":""}: каждое движение входит в итог один раз (родитель уже включает подчинённых).</p>
+  ${ratesPanel(usedCurs, to)}`;
 }
 
 /* ---------- ТР-40. Внутренние займы ---------- */
@@ -418,7 +459,8 @@ function viewDash(){
   <section class="hero">
     <div class="hero-main">
       <span class="hero-label">Фактический остаток (Кф) доступных кошельков на ${fmtD(CUR.date)}</span>
-      <b class="hero-sum ${tot.usd<0?"neg":""}">${fmt(tot.usd)}<small>USD</small></b>
+      <b class="hero-sum ${tot.usd<0?"neg":""}" ${usdMark(tot).title?`title="${esc(usdMark(tot).title)}"`:""}>${usdMark(tot).pre}${fmt(tot.usd)}<small>USD</small></b>
+      ${usdMark(tot).cls?`<span class="hero-label amber">≈ ${esc(usdMark(tot).title)}</span>`:""}
       <span class="hero-label" title="Кп = Кф − исходящие в пути, подтверждённые казначеем">Плановый (Кп): <b>${fmt(usdOf(bp,CUR.date).usd)} USD</b></span>
       <div class="hero-links"><a class="lnk" onclick="go('rep37')">Открыть по кошелькам</a><a class="lnk" onclick="go('rep75')">Расположение ДС</a></div>
     </div>
@@ -494,7 +536,11 @@ function opsAccount(d){   // ТР-07, ДР-09: участие в Кф и Кп
   if(!docCounts(d)){ const r = outReason(d); return docState(d)!=="posted" ? docStateTag(d) : `<span class="tag" title="${esc(r)}">вне расчёта</span>${r?` <span class="muted" style="font-size:11.5px">${esc(r)}</span>`:""}`; }
   if(d.type!=="СБДС") return `<span class="tag ok">в Кф</span>`;
   if(d.ev ? d.ev.kf!==FAR : d.bankDate) return `<span class="tag ok" title="Исполнен банком ${fmtD(d.bankDate)}">в Кф</span>`;
-  return d.sentConf ? `<span class="tag info" title="Казначей подтвердил отправку">в Кп (Писх)</span>` : `<span class="tag warn" title="Банк не исполнил, казначей не подтвердил отправку">не исполнен банком</span>`;
+  // ДР-04-21.10: «не исполнен банком» — только при признаке «Нет»; при «Да» без даты и при «Нет данных» — неполнота сведений
+  const B = d.ev && d.ev.flags ? d.ev.flags.bank : false;
+  const why = B===true ? "проведено банком — Да, нет даты проведения банком" : B==null ? "нет данных: проведено банком" : "не исполнен банком";
+  const tag = B===false ? `<span class="tag warn" title="Банк не исполнил">не исполнен банком</span>` : `<span class="tag" title="${esc(why)}">не в Кф: ${esc(B===true?"нет даты исполнения":"нет данных")}</span>`;
+  return d.sentConf ? `<span class="tag info" title="Казначей подтвердил отправку">в Кп (Писх)</span>${B===false?"":" "+tag}` : tag;
 }
 function openOpsForm(){
   openModal({title:"Настроить форму", width:560, body:()=>`<p class="muted">Отметьте колонки, которые нужно показывать, и расставьте их стрелками. Настройка запоминается в этом браузере.</p>

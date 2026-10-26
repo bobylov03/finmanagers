@@ -845,11 +845,10 @@ def set_lang(C, u, lang):
 # ================= период и настройки =================
 SETTING_LABELS = {"startDate": "Дата начала учёта", "closedTo": "Закрытие периода", "switchDate": "Дата перехода на автообмен",
                   "autoClose": "Автозакрытие периода", "excludedOps": "Изменение списка исключаемых операций",
-                  "stateMap": "Таблица соответствия состояний ERP (ТР-106)", "rateForm": "Форма котировки курса в отчёте ERP",
+                  "rateForm": "Форма котировки курса в отчёте ERP",
                   "recon1c": "Сверка с остатками 1С", "holdClosed": "Удержание изменений ERP в закрытом периоде",
                   "dbTime": "Daily Balance: контрольное время", "dbWeekends": "Daily Balance: выходные дни недели",
                   "dbHolidays": "Daily Balance: праздничные дни", "dbWorkdays": "Daily Balance: рабочие выходные", "dbTol": "Daily Balance: допуск расхождения"}
-MEANINGS = ("pending", "approved", "posted", "notposted", "deleted")
 
 
 def set_setting(C, u, key, value):
@@ -862,8 +861,6 @@ def set_setting(C, u, key, value):
         value = bool(value)
     elif key in ("excludedOps",):
         value = [s(x, 200) for x in (value or []) if s(x)]
-    elif key == "stateMap":
-        value = [{"value": s(x.get("value"), 200), "meaning": x.get("meaning")} for x in (value or []) if s(x.get("value")) and x.get("meaning") in MEANINGS]
     elif key == "rateForm":
         if value not in ("perUsd", "usdPer"):
             raise ApiError(["Неизвестная форма котировки"])
@@ -964,32 +961,6 @@ def dup_decide(C, u, doc_id, action, manual=None):
 def nm_doc(C, i):
     m = C.get("docs", i)
     return (m.get("no") or m["id"]) if m else "удалена"
-
-
-# ================= таблица соответствия состояний из реестра загрузки (ТР-106, ТР-109) =================
-def save_state_values(C, u, items):
-    """Несколько значений за раз — одним действием из реестра загрузки."""
-    items = [x for x in (items or []) if isinstance(x, dict) and x.get("meaning")]
-    if not items:
-        raise ApiError(["Выберите, что означает хотя бы одно значение"])
-    for x in items:
-        save_state_value(C, u, x.get("value"), x.get("meaning"))
-    return len(items)
-
-
-def save_state_value(C, u, value, meaning):
-    """Загружающий задаёт значение этапа/состояния ERP прямо в реестре; попадает в таблицу ТР-106 и журнал аудита."""
-    from .importer import need_upload
-    need_upload(u)
-    value = s(value, 200)
-    if not value or meaning not in MEANINGS:
-        raise ApiError(["Выберите, что означает значение"])
-    from .util import norm
-    before = list(C.S["settings"].get("stateMap") or [])
-    after = [x for x in before if norm(x.get("value")) != norm(value)] + [{"value": value, "meaning": meaning}]
-    C.st.set_setting("stateMap", after)
-    old = next((x["meaning"] for x in before if norm(x.get("value")) == norm(value)), None)
-    C.st.audit(u, SETTING_LABELS["stateMap"], value, f"{old or '—'} → {meaning}")
 
 
 # ================= сопоставления (ТР-109) =================
@@ -1205,3 +1176,61 @@ def db_explain(C, u, pid, d, comment):
         raise ApiError(["Опишите причину расхождения"])
     C.st.add("dbExpl", {"id": None, "pos": pos["id"], "date": d, "comment": comment, "user": u["id"], "uname": u["name"], "t": now_iso()})
     C.st.audit(u, "Daily Balance: «Объяснено»", f"{nm(C.acc(pos['acc']))} · {cur_code(C, pos['cur'])} за {fmt_d(d)}", comment)
+
+
+# ================= разовая очистка тестовой базы (ДР-05-21.10) =================
+def _created_day(C, iso):
+    """Дата создания записи по Москве (настройка Daily Balance), из отметки времени UTC."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    if not iso:
+        return ""
+    try:
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return str(iso)[:10]
+    if t.tzinfo is None:
+        return t.date().isoformat()
+    return t.astimezone(ZoneInfo(C.S["settings"].get("dbTz") or "Europe/Moscow")).date().isoformat()
+
+
+def purge_plan(C, u, day, with_ops=True):
+    """Что будет удалено: документы (и, по выбору, внутренние операции), запись которых создана в день day, — независимо от даты
+    самого документа, состояния и пометки на удаление. Связанные операции «Требует оформления» удаляются вместе с документом."""
+    need_admin(u)
+    if not valid_iso(day):
+        raise ApiError(["Укажите дату создания"])
+    docs = [d for d in C.S["docs"] if _created_day(C, d.get("created")) == day]
+    ids = {d["id"] for d in docs}
+    ops = [o for o in C.S["ops"] if (with_ops and _created_day(C, o.get("created")) == day) or (o.get("linkedDoc") in ids)]
+    keep_docs = len(C.S["docs"]) - len(docs)
+    return {"day": day, "docs": [{"id": d["id"], "type": d["type"], "no": d.get("no1c") or d.get("no"), "date": d["date"], "source": d.get("source"),
+                                  "created": d.get("created")} for d in docs],
+            "ops": [{"id": o["id"], "no": o.get("no"), "kind": o["kind"], "date": o["date"], "created": o.get("created")} for o in ops],
+            "keepDocs": keep_docs}
+
+
+def purge_apply(C, u, day, with_ops, backup_file):
+    """Физическое удаление — только как разовая административная очистка тестовой базы после резервной копии."""
+    plan = purge_plan(C, u, day, with_ops)
+    ids = {x["id"] for x in plan["docs"]}
+    oids = {x["id"] for x in plan["ops"]}
+    guids = {d["guid"] for d in C.S["docs"] if d["id"] in ids and d.get("guid")}
+    c = C.st.conn
+    for i in ids:
+        c.execute("DELETE FROM doc_lines WHERE doc_id=?", (i,))
+        c.execute("DELETE FROM docs WHERE id=?", (i,))
+        c.execute("DELETE FROM versions WHERE obj_kind='doc' AND obj_id=?", (i,))
+        c.execute("DELETE FROM closed_changes WHERE doc_id=?", (i,))
+    for i in oids:
+        c.execute("DELETE FROM ops WHERE id=?", (i,))
+        c.execute("DELETE FROM versions WHERE obj_kind='op' AND obj_id=?", (i,))
+    for g_ in guids:
+        c.execute("DELETE FROM erp_flags WHERE guid=?", (g_,))
+    C.S["docs"] = [d for d in C.S["docs"] if d["id"] not in ids]
+    C.S["ops"] = [o for o in C.S["ops"] if o["id"] not in oids]
+    C.S["closedChanges"] = [x for x in C.S["closedChanges"] if x.get("docId") not in ids]
+    C.S["erpFlags"] = [x for x in C.S["erpFlags"] if x["guid"] not in guids]
+    C.st.audit(u, "Очистка тестовой базы (ДР-05-21.10)", f"созданы {fmt_d(day)}",
+               f"удалено документов: {len(ids)}, внутренних операций: {len(oids)}; резервная копия: {backup_file}")
+    return {"docs": len(ids), "ops": len(oids), "backup": backup_file, "keepDocs": plan["keepDocs"]}

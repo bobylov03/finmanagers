@@ -153,8 +153,6 @@ LINE_COLS = [("sum", "sum", "f"), ("usd", "usd", "f"), ("wallet", "wallet", "s")
 DEFAULT_SETTINGS = {
     "startDate": "", "closedTo": "", "switchDate": "", "autoClose": True,
     "excludedOps": ["Конвертация валюты", "Перечисление на другой счёт", "Оплата в другую организацию группы", "Инкассация"],
-    # ТР-106: значения «Текущего этапа» и «Текущего состояния» ERP → смысл (approved | posted | notposted | deleted)
-    "stateMap": [],
     # ТР-32, ТР-90: форма котировки поля «Курс» в отчёте ERP: perUsd — единиц валюты за 1 USD; usdPer — USD за 1 единицу
     "rateForm": "perUsd",
     # ТР-41…43: сверка с остатками 1С включается, когда в 1С появятся актуальные остатки
@@ -226,6 +224,8 @@ class Store:
         for table, col, typ in self.ADD_COLS:
             if col not in self._cols(table):
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        # ДР-03-21.10: таблица соответствия состояний прежнего формата больше не используется
+        self.conn.execute("DELETE FROM settings WHERE key='stateMap'")
 
     # ---------- транзакции ----------
     @contextmanager

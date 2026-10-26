@@ -629,6 +629,48 @@ def needs_formalizing(C):
             and d["from"]["wallet"] != d["to"]["wallet"] and d["id"] not in linked]
 
 
+# ---------------- актуальность курсов ERP (ДР-02-23.10) ----------------
+def need_rate_day(C, d):
+    """Курс ERP какой даты нужен для отчёта на дату d: последний рабочий день не позже d (календарь Daily Balance)."""
+    from .daily import is_workday
+    x = date.fromisoformat(d)
+    for _ in range(40):
+        if is_workday(C, x.isoformat()):
+            return x.isoformat()
+        x -= timedelta(days=1)
+    return d
+
+
+def rates_status(C, d=None, window=30):
+    """По каждой валюте счетов и касс: последний курс ≤ d, нужная дата, актуальность и пропущенные рабочие дни за window дней;
+    дата последней успешной загрузки курсов и последняя ошибка обмена."""
+    from .daily import is_workday
+    d = d or today_iso()
+    need = need_rate_day(C, d)
+    curs = sorted({c for a in C.S["accounts"] + C.S["cashboxes"] for c in acc_curs(a) if not is_usd(C, c)}, key=lambda c: cur_code(C, c))
+    ix = rate_index(C)
+    out = []
+    for c in curs:
+        lst = [r for r in ix.get(c, []) if r["date"] <= d]
+        last = lst[-1] if lst else None
+        have = {r["date"] for r in lst}
+        start = date.fromisoformat(d) - timedelta(days=window)
+        first = lst[0]["date"] if lst else None
+        gaps = []
+        x = date.fromisoformat(d)
+        while x > start:
+            xi = x.isoformat()
+            if first and xi >= first and is_workday(C, xi) and xi not in have:
+                gaps.append(xi)
+            x -= timedelta(days=1)
+        st = "none" if not last else ("ok" if last["date"] >= need else "prelim")
+        out.append({"cur": c, "code": cur_code(C, c), "last": last and last["date"], "rate": last and last["rate"], "need": need, "st": st, "gaps": sorted(gaps)})
+    logs = [e for e in C.S["exchangeLog"] if e.get("kind") == "Справочники и курсы"]
+    ok_ = [e for e in logs if not e.get("errors")]
+    bad = [e for e in logs if e.get("errors")]
+    return {"date": d, "need": need, "curs": out, "lastLoad": ok_[-1]["t"] if ok_ else None, "lastError": bad[-1] if bad and (not ok_ or bad[-1]["t"] > ok_[-1]["t"]) else None}
+
+
 def notifications(C, u, d=None):
     d = d or today_iso()
     out, A = [], is_admin(u)
@@ -654,11 +696,11 @@ def notifications(C, u, d=None):
         out.append({"lvl": "warn", "text": f"Строк без кошелька: {no_w}", "tr": "ТР-23", "go": "nowallet"})
     rv = [d for d in C.S["docs"] if needs_review(C, d) and can_review(C, u, d)]
     if rv:
-        out.append({"lvl": "warn", "text": f"Документы требуют проверки: {len(rv)}", "tr": "ТР-85, ТР-70", "go": "docs?state=review"})
+        out.append({"lvl": "warn", "text": f"Документы требуют проверки: {len(rv)}", "tr": "ТР-85, ТР-70", "go": "docs?review=1&state="})
     nd = [d for d in C.S["docs"] if d.get("source") == "file" and not d.get("excluded") and doc_eval(C, d)["missing"]
           and (A or can_review(C, u, d))]
     if nd:
-        out.append({"lvl": "warn", "text": f"Нет данных ERP по документам (признаки не получены): {len(nd)} — в расчёт не входят", "tr": "ДР-07", "go": "docs?state=nodata"})
+        out.append({"lvl": "warn", "text": f"Нет данных ERP по документам (признаки не получены): {len(nd)} — в расчёт не входят", "tr": "ДР-07", "go": "docs?review=&state="})
     try:
         from .daily import db_notifications
         out += db_notifications(C, u, d)
@@ -668,6 +710,13 @@ def notifications(C, u, d=None):
     unseen = [c for c in C.S["closedChanges"] if u["id"] not in (c.get("seen") or [])]
     if unseen and (A or has(u, "treasurer")):
         out.append({"lvl": "warn", "text": f"Изменения 1С в закрытом периоде: {len(unseen)}", "tr": "ТР-56", "go": "closedch"})
+    if A or has(u, "owner") or has(u, "fcHead"):
+        rs = C.cache(("ratesSt", d), lambda: rates_status(C, d))
+        stale = [x for x in rs["curs"] if x["st"] != "ok"]
+        if stale:
+            out.append({"lvl": "warn", "text": "Курсы ERP не актуальны — USD-показатели отчётов предварительные: " +
+                        "; ".join(f"{x['code']} — {'нет курса' if not x['last'] else 'последний ' + fmt_d(x['last'])}" for x in stale) +
+                        f" (нужен на {fmt_d(rs['need'])})", "tr": "ДР-02-23.10", "go": "refs"})
     if A:
         kinds = {}
         for e in C.S["exchangeLog"]:

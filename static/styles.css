@@ -830,3 +830,8 @@ table.kfkp td.usd{font-weight:600}
 .flags-mini b.muted{color:var(--ink-3,#8a958f);font-weight:400}
 .flags-mini b.neg{color:var(--neg)}
 .dup-panel>summary{cursor:pointer;padding:10px 12px;list-style-position:inside}
+
+/* ДР-02-23.10: USD по последнему доступному курсу — предварительный расчёт */
+td.prelim{color:var(--amber);font-style:italic}
+td.prelim.neg{color:var(--neg)}
+.rates-panel>summary{cursor:pointer;padding:10px 12px;list-style-position:inside}

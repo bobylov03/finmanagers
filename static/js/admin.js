@@ -2,31 +2,6 @@
 /* ============================================================
    15. ЗАГРУЗКА ФАЙЛОВ (ТР-60…67, ТР-70, ТР-64, ТР-65)
    ============================================================ */
-const EXP_SPEC = {
-  guid:["GUID документа 1С","GUID документа","GUID","Идентификатор документа"],
-  type:["Тип","Тип документа","Вид документа"],
-  op:["Хозяйственная операция","Хоз. операция","Хоз операция","Операция"],
-  no:["Номер","Номер документа"],
-  date:["Дата","Дата документа","Дата создания"],
-  org:["Организация"],
-  acc:["Счёт или касса","Счет или касса","Банковский счёт","Банковский счет","Счёт","Счет","Касса"],
-  cur:["Валюта"],
-  status:["Статус"],
-  approved:["Согласован","Прошёл согласование","Согласование"],
-  bank:["Проведено банком","Признак проведено банком"],
-  bankDate:["Дата проведения банком"],
-  sum:["Сумма в валюте","Сумма"],
-  usd:["Сумма в USD","Сумма USD"],
-  wallet:["Кошелёк","Кошелек"],
-  dept:["Подразделение"],
-  cf:["Тип расхода CF","Тип расхода","Статья ДДС"],
-  zone:["Зона ответственности","Зона"],
-  cpty:["Контрагент"],
-  contract:["Договор"],
-  purpose:["Назначение платежа","Назначение"],
-};
-const EXP_REQ = ["guid","type","date","org","acc","sum","status"];
-const EXP_HEAD = ["GUID документа 1С","Тип","Хозяйственная операция","Номер","Дата","Организация","Счёт или касса","Валюта","Статус","Согласован","Проведено банком","Дата проведения банком","Сумма в валюте","Сумма в USD","Кошелёк","Подразделение","Тип расхода CF","Зона ответственности","Контрагент","Договор","Назначение платежа"];
 const ID_AL = ["Идентификатор","GUID","ID","Ид","Код"];
 const REF_KINDS = {
   currencies:{name:"Валюты", key:"currencies", spec:{id:["Идентификатор","GUID","ID","Код"], name:["Наименование"], code:["Символьный код","Буквенный код","Код ISO"]}, req:["id"], head:["Идентификатор","Наименование","Символьный код"]},
@@ -95,14 +70,6 @@ function downloadTemplate(kind){
     ["Согласован","Да / Нет; пусто — «Нет данных». Для СБДС: без «Да» документ не входит ни в Кф, ни в исходящие в пути"],["Помечен на удаление","Да / Нет"],
     ["Проведено банком","Только для СБДС: Да / Нет — фактическое исполнение платежа банком (ТР-09). Не определяется по проведению или согласованию. В Кф СБДС входит при «Да» и заполненной дате проведения банком из отчёта ERP"],
     ["",""],["","Отсутствующая колонка не меняет признак; пустая ячейка — «Нет данных». Документа ещё нет — признаки сохранятся и применятся при его загрузке. Отмена, распроведение и пометка на удаление исключают документ из расчёта сразу; исполнение банком учитывается сразу, без проверки казначеем (ТР-85)."]]}]), "Шаблон — признаки документов ERP.xlsx");
-  if(kind==="exp61") downloadBlob(xlsxBlob([{name:"Расходы", rows:[EXP_HEAD]}, {name:"Описание", rows:[["Колонка","Обязательно","Значения"],
-    ["GUID документа 1С","да","Ключ документа 1С. Несколько строк с одним GUID — строки расшифровки одного документа"],["Тип","да","СБДС или РКО; ПБДС и ПКО — только с даты перехода на автообмен (ТР-72), до неё поступления вводятся вручную"],
-    ["Хозяйственная операция","","Операции из списка ТР-70 проверяются на двойной учёт с ручными операциями (ДР-01)"],["Дата","да","Дата создания документа, ДД.ММ.ГГГГ"],
-    ["Организация","да","Идентификатор или наименование из 1С"],["Счёт или касса","да","Идентификатор или наименование; должен принадлежать организации"],
-    ["Валюта","","Если указана — должна совпадать с валютой счёта"],["Статус","да","Проведён / Не проведён / На согласовании / Помечен на удаление. В расчёт входит только «Проведён»"],["Согласован","","Да / Нет — для СБДС. Пусто — «Нет данных»: СБДС не входит в остаток, пока признак не получен (ДР-07)"],
-    ["Проведено банком","","Да / Нет — только для СБДС; пусто — «Нет данных» (ДР-05)"],["Дата проведения банком","","Для СБДС"],["Сумма в валюте","да","Положительное число; расход вычитается автоматически"],
-    ["Сумма в USD","","Из 1С. Если пусто — пересчёт по курсу ERP на дату"],["Кошелёк","","Необязательно — назначается правилами в приложении (ТР-73)"],
-    ["Подразделение, Тип расхода CF, Зона ответственности","","Идентификатор или наименование из 1С"]]}]), "Шаблон — расходы из 1С.xlsx");
   if(kind==="ref") downloadBlob(xlsxBlob(REF_ORDER.map(k=>({name:REF_KINDS[k].name, rows:[REF_KINDS[k].head]}))), "Шаблон — справочники 1С.xlsx");
   if(kind==="bal") downloadBlob(xlsxBlob([{name:"Остатки 1С", rows:[["Дата","Счёт или касса","Валюта","Остаток"]]}]), "Шаблон — остатки 1С.xlsx");
 }
@@ -111,32 +78,6 @@ async function impMap(kind, raw, target){
   if(!r.ok) return showErrors(r);
   await reloadState(); await impPreview(); render();
   toast(`Сопоставление запомнено: «${raw}»`, {lvl:"ok"});
-}
-let STM = {};
-function stateMapBox(P){
-  const vals = P.unmapped||[]; if(!vals.length) return "";
-  const guess = {}; (P.registry||[]).forEach(r=>Object.entries(r.stateGuess||{}).forEach(([v,g])=>{ if(g && !guess[v]) guess[v] = g; }));
-  vals.forEach(v=>{ if(!(v in STM)) STM[v] = guess[v] || ""; });
-  const cnt = {}; (P.registry||[]).forEach(r=>Object.keys(r.stateGuess||{}).forEach(v=>cnt[v]=(cnt[v]||0)+1));
-  const ready = vals.filter(v=>STM[v]).length;
-  return `<div class="alert err statemap-box"><b>Сопоставьте значения этапа и состояния ERP (ТР-106).</b> Пока значение не сопоставлено, непонятно, входит ли документ в расчёт, — такие строки считаются ошибками. Сопоставление делается один раз и запоминается в таблице соответствия${isAdmin(me())?` (её можно править в <a class="lnk" onclick="go('settings')">настройках</a>)`:""}. Предвыбрано по смыслу слова — проверьте.
-    <table class="mini" style="margin-top:8px"><thead><tr><th>Значение в файле</th><th class="num">Строк</th><th>Означает</th></tr></thead><tbody>
-    ${vals.map(v=>`<tr><td class="notr"><b>${esc(v)}</b></td><td class="num">${cnt[v]||""}</td><td><select onchange="STM['${jsq(v)}']=this.value;render()"><option value="">— выберите —</option>${Object.entries(MEANING_NAMES).map(([k,t])=>`<option value="${k}" ${STM[v]===k?"selected":""}>${esc(t)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table>
-    <div class="row" style="margin-top:8px"><button class="btn primary" ${ready?"":"disabled"} onclick="impStateAll()">Сохранить сопоставление (${ready} из ${vals.length}) и проверить заново</button></div></div>`;
-}
-async function impStateAll(){
-  const items = Object.entries(STM).filter(([v,m])=>m && (IMP.pv.unmapped||[]).includes(v)).map(([value,meaning])=>({value, meaning}));
-  const r = await apiRaw("/api/statemap", {items});
-  if(!r.ok) return showErrors(r);
-  STM = {}; await reloadState(); await impPreview(); render();
-  toast(`В таблицу соответствия добавлено значений: ${items.length}`, {lvl:"ok"});
-}
-async function impState(value, meaning){
-  if(!meaning) return;
-  const r = await apiRaw("/api/statemap", {value, meaning});
-  if(!r.ok) return showErrors(r);
-  await reloadState(); await impPreview(); render();
-  toast(`Таблица соответствия: «${value}» → ${MEANING_NAMES[meaning]}`, {lvl:"ok"});
 }
 function impFix(n, f, v){ (IMP.fixes[n] = IMP.fixes[n]||{})[f] = v; impPreview().then(render); }
 function impUnfix(n, f){ if(IMP.fixes[n]){ delete IMP.fixes[n][f]; if(!Object.keys(IMP.fixes[n]).length) delete IMP.fixes[n]; } impPreview().then(render); }
@@ -149,9 +90,7 @@ function regCell(r, f, shown){
   let h = `<span class="${ch?"chg":""}" ${ch?`title="Было: ${esc(ch.before)}"`:""}>${shown}</span>`;
   if(r.n && (err || warn) && canUpload(me())){
     const raw = (f==="acc" && r.fmt==="erp17" ? (r.accNo||r.bankName) : (r.raw||{})[f]) || "";
-    if(f==="state"){   // ТР-106: значения сопоставляются один раз — в панели над реестром
-      h = `<span class="neg">не сопоставлено:</span> <span class="notr">${Object.keys(r.stateGuess||{}).map(v=>`«${esc(v)}»`).join(", ")}</span>`;
-    } else if(MAP_LIST[f]){ const L = f==="acc" && r.org ? MAP_LIST.acc().filter(a=>a.org===r.org) : MAP_LIST[f]();
+    if(MAP_LIST[f]){ const L = f==="acc" && r.org ? MAP_LIST.acc().filter(a=>a.org===r.org) : MAP_LIST[f]();
       h = `<span class="raw notr">${esc(raw||"(пусто)")}</span><select class="fix" title="Выберите из справочника — сопоставление запомнится для следующих загрузок (ТР-109)" onchange="impMap('${f}','${jsq(raw)}',this.value)"><option value="">— выбрать из справочника —</option>${(f==="dept"?tree(L):L).map(x=>`<option value="${esc(x.id)}">${"   ".repeat(x._lvl||0)}${esc(x.name||x.code)}</option>`).join("")}</select>`;
     } else if(err){
       h = `<input type="text" class="fix" value="${esc(raw)}" title="Исправьте значение — строка проверится сразу (ТР-109)" onchange="impFix('${r.n}','${f}',this.value)">`;
@@ -166,7 +105,7 @@ const FIELD_RU = {f_posted:"проведён", f_approved:"согласован"
 const REG_COLS = new Set(["guid","type","date","org","acc","cur","sum","docSum","rate","state","dept","cf","cpty","bankDate"]);
 function regNote(r, span){
   // ошибки в полях без своей колонки (ТР-61: USD, кошелёк, курс) — исправляются здесь же (ТР-109)
-  const extra = r.n && canUpload(me()) ? (r.errs||[]).filter(e=>e.f && (!REG_COLS.has(e.f) || (e.f==="rate" && r.fmt!=="hist"))) : [];
+  const extra = r.n && canUpload(me()) ? (r.errs||[]).filter(e=>e.f && (!REG_COLS.has(e.f) || e.f==="rate")) : [];
   const parts = [...(r.errs||[]).map(e=>`<span class="neg">✕ ${esc(e.msg)}</span>`),
     ...extra.map(e=>`<label class="fixrow">${esc(FIELD_RU[e.f]||e.f)}: <input type="text" class="fix" value="${esc((r.raw||{})[e.f]||"")}" onchange="impFix('${r.n}','${e.f}',this.value)"></label>`), ...(r.warns||[]).map(e=>`<span class="amber">! ${esc(e.msg)}</span>`),
     ...(r.why?[`<span class="muted">${esc(r.why)}</span>`]:[]),
@@ -186,7 +125,7 @@ function registryTable(P){
   const reg = P.registry||[]; const cnt = {}; reg.forEach(r=>cnt[r.st]=(cnt[r.st]||0)+1);
   const dupN = reg.filter(r=>r.dup).length;
   const list = reg.filter(r=>!IMP.flt || r.st===IMP.flt || (IMP.flt==="dup" && r.dup)); const shown = list.slice(0, IMP.lim);
-  const hist = P.format==="hist" || P.format==="erp17", e17 = P.format==="erp17";
+  const hist = true, e17 = true;   // ДР-03-21.10: только отчёт из 17 столбцов
   return `<div class="chips reg-chips">${chip(!IMP.flt,"IMP.flt='';render()",`Все · ${reg.length}`)}${Object.entries(REG_ST).filter(([k])=>cnt[k]).map(([k,[t]])=>chip(IMP.flt===k,`IMP.flt='${k}';render()`,`${t} · ${cnt[k]}`)).join("")}${dupN?chip(IMP.flt==="dup","IMP.flt='dup';render()",`Двойной учёт · ${dupN}`):""}</div>
   <div class="tbl-wrap reg-wrap"><table id="tReg" class="registry"><thead><tr><th>Стр.</th><th>Статус</th><th>Номер ERP · GUID</th><th>Тип</th><th>Дата</th><th>Организация</th><th>${e17?"Банк · Р/сч → счёт":hist?"Банк (счёт)":"Счёт или касса"}</th><th>Валюта</th><th class="num">${e17?"Сумма строки":"Сумма"}</th>${hist?`<th class="num">${e17?"Сумма в валюте документа":"Сумма документа"}</th>${e17?`<th class="num">Сумма (USD)</th>`:""}<th class="num">Курс</th>`:""}<th>${e17?"Признаки ERP":"Состояние"}</th><th>Подразделение</th><th>Тип расхода CF</th><th>Получатель</th><th>Дата банка</th></tr></thead>
   <tbody>${shown.map(r=>{ const [stName, stCls] = REG_ST[r.st]||["",""];
@@ -196,7 +135,7 @@ function registryTable(P){
       <td>${regCell(r,"org",esc(r.org?nm(org(r.org)):""))}</td><td>${e17&&(r.bankName||r.accNo)?`<div class="sub notr">${esc([r.bankName,r.accNo].filter(Boolean).join(" · "))}</div>`:""}${regCell(r,"acc",esc(r.acc?nm(acc(r.acc)):""))}</td><td>${regCell(r,"cur",esc(r.cur?curCode(r.cur):""))}</td>
       <td class="num">${regCell(r,"sum",r.sum!=null?fmt(r.sum):"")}</td>
       ${hist?`<td class="num">${regCell(r,"docSum",r.docSum!=null?fmt(r.docSum):"")}</td>${e17?`<td class="num">${regCell(r,"usd",r.usd!=null?fmt(r.usd):"")}</td>`:""}<td class="num">${regCell(r,"rate",r.rate?fmtRate(r.rate):"")}</td>`:""}
-      ${e17?`<td class="flags-cell">${regFlags(r)}</td>`:`<td>${regCell(r,"state",`${esc(r.state||"")}${r.stateRaw?`<div class="sub notr">${esc([r.stage,r.stateRaw].filter(Boolean).join(" · "))}</div>`:""}`)}</td>`}
+      <td class="flags-cell">${regFlags(r)}</td>
       <td>${regCell(r,"dept",esc(r.dept?refName(DB.depts,r.dept):""))}</td><td>${regCell(r,"cf",esc(r.cf?refName(DB.cfTypes,r.cf):""))}</td>
       <td>${regCell(r,"cpty",esc(r.cpty||""))}</td><td class="nowrap">${regCell(r,"bankDate",r.bankDate?fmtD(r.bankDate):"")}</td>
 </tr>${regNote(r, e17?17:hist?16:15)}`; }).join("") || `<tr><td colspan="17" class="empty-cell">Строк с таким статусом нет</td></tr>`}</tbody></table></div>
@@ -226,15 +165,14 @@ function viewImport(){
   if(IMP.err) pv = `<div class="alert err">${esc(IMP.err)}</div>`;
   else if(P && T==="exp"){
     const S = IMP.sel; const errN = P.errors.length; const nothing = !P.add.length&&!P.upd.length&&!P.exc.length;
-    pv = `<div class="panel"><header><h2>Реестр загрузки · ${esc(IMP.fileName)}</h2><span class="hint">${P.format==="erp17"?"отчёт ERP «История согласования», 17 полей (ТР-90)":P.format==="hist"?"«История согласования», прежний формат из 20 полей":"формат ТР-61"} · ${P.rows||0} ${plural(P.rows||0,"строка","строки","строк")}</span></header><div class="body">
+    pv = `<div class="panel"><header><h2>Реестр загрузки · ${esc(IMP.fileName)}</h2><span class="hint">отчёт ERP «История согласования», 17 столбцов (ТР-90) · ${P.rows||0} ${plural(P.rows||0,"строка","строки","строк")}</span></header><div class="body">
       ${P.allOrgs.length?`<div class="filters" style="margin-bottom:12px">
         <div class="fld"><span>Загрузка заменяет период для организаций (ТР-62)</span><div class="msel">${P.allOrgs.map(o=>`<label class="chk"><input type="checkbox" ${S.orgs.includes(o)?"checked":""} onchange="impSelOrg('${o}',this.checked)"> ${esc(nm(org(o)))}</label>`).join("")}</div></div>
         <label class="fld"><span>Даты с</span><input type="date" value="${S.from}" onchange="IMP.sel.from=this.value;impPreview().then(render)"></label>
         <label class="fld"><span>по</span><input type="date" value="${S.to}" onchange="IMP.sel.to=this.value;impPreview().then(render)"></label>
         <span class="muted" style="max-width:48ch">Документы этих организаций и дат, которых нет в файле, будут исключены — они показаны в реестре строками «Выйдет из расчёта». Повторная загрузка того же файла ничего не меняет.</span></div>`:""}
-      ${errN && !(P.registry||[]).length?`<div class="alert err"><b>Файл не распознан:</b> ${P.errors.map(e=>esc(e.msg)).join("; ")}. Нужен лист с колонками отчёта «История согласования» (или формата ТР-61) — скачайте шаблон.</div>`:""}
-      ${errN && (P.registry||[]).length && (P.registry||[]).some(r=>(r.errs||[]).some(e=>e.f!=="state"))?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
-      ${stateMapBox(P)}
+      ${errN && !(P.registry||[]).length?`<div class="alert err"><b>${P.format==="unsupported"?"Файл отклонён.":"Файл не распознан:"}</b> ${P.errors.map(e=>esc(e.msg)).join("; ")}${P.format==="unsupported"?"":". Нужен отчёт «История согласования» из 17 столбцов (ТР-90) — скачайте шаблон."}</div>`:""}
+      ${errN && (P.registry||[]).length && (P.registry||[]).length?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
       ${P.closed.length?`<div class="alert warn">Затрагивает закрытый период: ${P.closed.length} док. Изменения ERP принимаются (1С — мастер) и попадут в «Изменения в закрытом периоде» (ТР-56, ТР-89).</div>`:""}
       ${(P.significant||[]).length?`<div class="alert warn">Существенные изменения уже учтённых документов: ${P.significant.length}. После загрузки они уйдут на проверку казначею, до проверки в расчёте останется прежнее движение (ТР-85).</div>`:""}
       ${P.format==="erp17" && (P.registry||[]).some(r=>r.flags && r.flags.posted==null && r.st!=="error" && r.st!=="excluded")?`<div class="alert warn">Признаки ERP не получены у ${new Set((P.registry||[]).filter(r=>r.flags && r.flags.posted==null && r.st!=="error").map(r=>r.guid)).size} док.: они загрузятся со статусом «Нет данных» и не войдут в расчёт, пока признаки не будут получены (ДР-07). Загрузите их на вкладке <a class="lnk" onclick="impReset('flags');render()">«Признаки документов ERP»</a> — до или после этой загрузки.</div>`:""}
@@ -260,7 +198,7 @@ function viewImport(){
     pv = `<div class="panel"><header><h2>Предпросмотр · ${esc(IMP.fileName)}</h2></header><div class="body">
       ${IMP.sheets.length===1?`<label class="fld" style="max-width:320px;margin-bottom:10px"><span>Что в файле</span><select onchange="IMP.refKind=this.value;impPreview().then(render)"><option value="">— выберите справочник —</option>${REF_ORDER.map(k=>`<option value="${k}" ${IMP.refKind===k?"selected":""}>${REF_KINDS[k].name}</option>`).join("")}</select></label>`:""}
       <table><thead><tr><th>Справочник</th><th>Лист</th><th class="num">Новых</th><th class="num">Изменится</th><th class="num">Без изменений</th></tr></thead>
-      <tbody>${Object.values(P.stats).map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.sheet)}</td><td class="num">${s.add}</td><td class="num">${s.upd}</td><td class="num">${s.same}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Нечего загружать</td></tr>`}</tbody></table>
+      <tbody>${Object.values(P.stats).map(s=>`<tr><td>${esc(s.name)}${s.period?`<div class="sub">период ${esc(s.period)}</div>`:""}</td><td>${esc(s.sheet)}</td><td class="num">${s.add}</td><td class="num">${s.upd}</td><td class="num">${s.same}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Нечего загружать</td></tr>`}</tbody></table>
       ${errTable(P.errors,"Ошибки")}${errTable(P.warns,"Предупреждения","warn")}
       <div class="row" style="margin-top:12px"><button class="btn primary" ${P.errors.length||!Object.values(P.stats).some(s=>s.add||s.upd)?"disabled":""} onclick="applyRef()">Загрузить</button>
       <button class="btn" onclick="IMP.sheets=null;IMP.pv=null;IMP.fileName='';render()">Отменить</button></div></div></div>`;
@@ -272,7 +210,7 @@ function viewImport(){
       <button class="btn" onclick="IMP.sheets=null;IMP.pv=null;IMP.fileName='';render()">Отменить</button></div></div></div>`;
   }
   const help = {
-    exp:`Основной формат — готовый отчёт ERP «История согласования»: 17 полей в утверждённом порядке и наименованиях (ТР-90), как его выгружает ERP — с заголовком отчёта, строкой номеров колонок и строкой «Итого». Строки с одним GUID — один документ; сумма документа делится между строками по «Сумма (USD)». Счёт находится по «Р/сч» — номеру счёта из справочника. Признаков «Проведён», «Согласован», «Помечен на удаление» и «Проведено банком» в отчёте нет (ТР-91): документ без них сохраняется со статусом «Нет данных» и в расчёт не входит, пока признаки не загружены на вкладке «Признаки документов ERP» (ДР-07). В фактический остаток (Кф) СБДС входит с даты проведения банком при признаке «Проведено банком» = Да. Документы с хозяйственными операциями ${DB.settings.excludedOps.map(x=>`«${x}»`).join(", ")} загружаются и проверяются на двойной учёт с ручными операциями (ТР-70, ДР-01). Прежний формат из 20 полей и формат ТР-61 тоже принимаются.`,
+    exp:`Основной формат — готовый отчёт ERP «История согласования»: 17 полей в утверждённом порядке и наименованиях (ТР-90), как его выгружает ERP — с заголовком отчёта, строкой номеров колонок и строкой «Итого». Строки с одним GUID — один документ; сумма документа делится между строками по «Сумма (USD)». Счёт находится по «Р/сч» — номеру счёта из справочника. Признаков «Проведён», «Согласован», «Помечен на удаление» и «Проведено банком» в отчёте нет (ТР-91): документ без них сохраняется со статусом «Нет данных» и в расчёт не входит, пока признаки не загружены на вкладке «Признаки документов ERP» (ДР-07). В фактический остаток (Кф) СБДС входит с даты проведения банком при признаке «Проведено банком» = Да. Документы с хозяйственными операциями ${DB.settings.excludedOps.map(x=>`«${x}»`).join(", ")} загружаются и проверяются на двойной учёт с ручными операциями (ТР-70, ДР-01). Прежний формат «Истории согласования» (с «Текущим этапом» и «Текущим состоянием») и формат ТР-61 не принимаются (ДР-03-21.10).`,
     flags:`Признаки документов ERP по GUID (ТР-91, ДР-05): «Проведён», «Согласован», «Помечен на удаление», «Проведено банком». Пустая ячейка — «Нет данных»; отсутствующая колонка признак не меняет. До интеграции с ERP признаки загружаются этим файлом; документ обновляется по GUID без дублей. Отменённый, распроведённый или помеченный на удаление документ сразу выходит из расчёта, исполнение банком учитывается сразу (ТР-85). Документа ещё нет — признаки применятся при его загрузке.`,
     ref:`Одна книга .xlsx с листами «Организации», «Банковские счета», «Кассы», «Валюты», «Курсы к USD», «Типы расхода CF», «Подразделения», «Зоны ответственности» — или один .csv с выбором справочника. Элементы сопоставляются по идентификатору ERP; удаления нет — только «Дата деактивации» (ТР-19). Курс — в форме котировки: сколько единиц валюты за 1 USD (например, 3,6725 AED), не менее 6 знаков (ТР-32).`,
     bal:`Колонки: Дата, Счёт или касса, Валюта, Остаток. Сверка выполняется на дату загруженных остатков (ТР-65).`,
@@ -287,9 +225,9 @@ function viewImport(){
         ondrop="event.preventDefault();this.classList.remove('over');const i=this.querySelector('input');i.files=event.dataTransfer.files;impFile(i)">
         <input type="file" accept=".xlsx,.csv,.txt" style="display:none" onchange="impFile(this)">
         <b>${IMP.fileName?esc(IMP.fileName):"Выберите файл .xlsx или .csv"}</b><br><span class="muted">или перетащите его сюда</span></label>
-      <button class="btn" onclick="downloadTemplate('${T}')">Скачать шаблон</button>${T==="exp"?`<button class="btn ghost" onclick="downloadTemplate('exp61')">Шаблон ТР-61</button>`:""}
+      <button class="btn" onclick="downloadTemplate('${T}')">Скачать шаблон</button>
     </div>
-  </div></div>${pv}`;
+  </div></div>${pv}${T==="ref"?ratesStatusPanel():""}`;
 }
 function viewXlog(){
   return `<h1>Журнал обмена <span class="tzref">ТР-18, ТР-67</span></h1>
@@ -562,13 +500,27 @@ async function saveUser(){
    20. СПРАВОЧНИКИ 1С — только просмотр (ТР-01, МД-06)
    ============================================================ */
 let REFT = "orgs", RATECUR = "";
+/* ДР-02-23.10: контроль актуальности и полноты курсов ERP */
+function ratesStatusPanel(){
+  const R = DB.ratesStatus; if(!R) return "";
+  const bad = R.curs.filter(x=>x.st!=="ok");
+  return `<div class="panel"><header><h2>Актуальность курсов ERP</h2><span class="tzref">ТР-16, ТР-58, ДР-02-23.10</span><div style="flex:1"></div>
+    <span class="hint">на ${fmtD(R.date)} нужен курс на ${fmtD(R.need)}${R.need!==R.date?" (последний рабочий день)":""}</span></header>
+    <div class="body flush"><table class="mini"><thead><tr><th>Валюта</th><th>Последний курс</th><th class="num">Курс</th><th>Статус</th><th>Пропущены рабочие дни (30 дней)</th></tr></thead><tbody>
+    ${R.curs.map(x=>`<tr><td>${esc(x.code)}</td><td>${x.last?fmtD(x.last):"—"}</td><td class="num">${x.rate?fmtRate(x.rate):"—"}</td>
+      <td>${x.st==="ok"?`<span class="tag ok">актуален</span>`:x.st==="prelim"?`<span class="tag warn">устарел — USD предварительный</span>`:`<span class="tag off">нет курса</span>`}</td>
+      <td>${x.gaps.length?`<span class="amber">${x.gaps.slice(-8).map(fmtD).join(", ")}${x.gaps.length>8?` и ещё ${x.gaps.length-8}`:""}</span>`:`<span class="muted">нет</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Валют, кроме USD, у счетов нет</td></tr>`}</tbody></table>
+    <p class="muted" style="padding:8px 12px;margin:0">Последняя успешная загрузка справочников и курсов: ${R.lastLoad?fmtDT(R.lastLoad):"не было"}.${R.lastError?` <span class="neg">Последняя загрузка с ошибками — ${fmtDT(R.lastError.t)}, см. «Журнал обмена».</span>`:""}
+    ${bad.length?" Пока курс не получен, USD-показатели отчётов «Деньги по кошелькам», «Расположение ДС» и «Фактический ДДС» считаются по последнему доступному курсу и помечены «≈». Загрузите недостающие курсы файлом (временный режим, ТР-64); после загрузки отчёты пересчитаются сами.":""}</p></div></div>`;
+}
 function viewRefs(){
   const tabs = [["orgs","Организации",DB.orgs.length],["accounts","Банковские счета",DB.accounts.length],["cashboxes","Кассы",DB.cashboxes.length],["currencies","Валюты",DB.currencies.length],["rates","Курсы к USD",DB.rates.length],["cfTypes","Типы расхода CF",DB.cfTypes.length],["depts","Подразделения",DB.depts.length],["zones","Зоны ответственности",DB.zones.length]];
   const deact = x => x.deactivated ? `<span class="tag off">с ${fmtD(x.deactivated)}</span>` : "";
   let t = "";
   if(REFT==="rates"){
+    t = ratesStatusPanel();
     const list = DB.rates.filter(r=>!RATECUR||r.cur===RATECUR).sort((a,b)=>a.date<b.date?1:-1).slice(0,1000);
-    t = `<div class="body filters"><label class="fld"><span>Валюта</span><select onchange="RATECUR=this.value;render()">${opts(DB.currencies,RATECUR,{empty:"Все"})}</select></label>
+    t += `<div class="body filters"><label class="fld"><span>Валюта</span><select onchange="RATECUR=this.value;render()">${opts(DB.currencies,RATECUR,{empty:"Все"})}</select></label>
       <span class="muted">Курс — в форме котировки: единиц валюты за 1 USD. USD = ÷ курс, округляется только итог. Контроль: 50 000 000 AED ÷ 3,6725 = ${fmt(toUSD(50000000,"__",null,3.6725))} USD (ТР-32).</span></div>
       <table id="tRef"><thead><tr><th>Валюта</th><th>Дата</th><th class="num">Единиц за 1 USD</th><th class="num">USD за 1 единицу</th></tr></thead><tbody>${list.map(r=>`<tr><td>${esc(curCode(r.cur))}</td><td>${fmtD(r.date)}</td><td class="num">${fmtRate(r.rate)}</td><td class="num muted">${fmtRate(1/r.rate)}</td></tr>`).join("")||`<tr><td colspan="4" class="muted">Курсов нет</td></tr>`}</tbody></table>`;
   } else {
@@ -618,31 +570,6 @@ async function resetAll(){
   if(!r.ok) return showErrors(r);
   VIEW = "dash"; render();
 }
-const MEANING_NAMES = {pending:"На согласовании (не в расчёте)", approved:"Прошёл согласование", posted:"Проведён (в расчёте)", notposted:"Не проведён / распроведён", deleted:"Помечен на удаление"};
-let SM = null;
-function stateValues(){
-  const seen = new Map(); (DB.docs||[]).forEach(d=>[d.stage, d.statusRaw].forEach(v=>{ v = (v||"").trim(); if(v) seen.set(v.toLowerCase(), v); }));
-  (DB.settings.stateMap||[]).forEach(x=>seen.set(x.value.toLowerCase(), x.value)); return [...seen.values()].sort((a,b)=>a.localeCompare(b,"ru"));
-}
-function stateMapPanel(){
-  const S = DB.settings; if(!SM) SM = clone(S.stateMap||[]);
-  const vals = stateValues(); vals.forEach(v=>{ if(!SM.some(x=>x.value.toLowerCase()===v.toLowerCase())) SM.push({value:v, meaning:""}); });
-  const dirty = JSON.stringify(SM.filter(x=>x.value&&x.meaning))!==JSON.stringify(S.stateMap||[]);
-  return `<div class="panel"><header><h2>Таблица соответствия состояний ERP — только прежний формат</h2><span class="tzref">ТР-106, ДР-06</span></header><div class="body stack">
-    <span class="muted">Применяется только к прежнему формату «Истории согласования» с колонками «Текущий этап» и «Текущее состояние». К действующему отчёту из 17 полей не применяется: признаки «Проведён», «Согласован», «Помечен на удаление» и «Проведено банком» получаются отдельно по GUID — «Загрузка файлов» → «Признаки документов ERP» (ДР-06). Значение, которого нет в таблице, блокирует загрузку прежнего формата — по смыслу слова оно не определяется.</span>
-    <table class="mini"><thead><tr><th>Значение ERP</th><th>Означает</th><th></th></tr></thead><tbody>
-    ${SM.map((x,i)=>`<tr><td>${x._new?`<input type="text" value="${esc(x.value)}" onchange="SM[${i}].value=this.value.trim();render()">`:`<span class="notr">${esc(x.value)}</span>`}</td>
-      <td><select onchange="SM[${i}].meaning=this.value;render()"><option value="">— не задано —</option>${Object.entries(MEANING_NAMES).map(([k,n])=>`<option value="${k}" ${x.meaning===k?"selected":""}>${esc(n)}</option>`).join("")}</select></td>
-      <td><button class="btn sm ghost" onclick="SM.splice(${i},1);render()">✕</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted">Значений пока нет — добавьте вручную или загрузите «Историю согласования»</td></tr>`}</tbody></table>
-    <div class="row"><button class="btn sm" onclick="SM.push({value:'',meaning:'',_new:true});render()">Добавить значение</button>
-      <button class="btn sm primary" ${dirty?"":"disabled"} onclick="saveStateMap()">Сохранить таблицу</button>${dirty?`<span class="amber">Есть несохранённые изменения</span>`:""}</div></div></div>`;
-}
-async function saveStateMap(){
-  const v = SM.filter(x=>x.value && x.meaning).map(x=>({value:x.value, meaning:x.meaning}));
-  const r = await mutate("/api/settings", {key:"stateMap", value:v});
-  if(!r.ok) return showErrors(r);
-  SM = null; toast("Таблица соответствия сохранена. Применится к следующей загрузке.", {lvl:"ok"});
-}
 const MAP_KIND_NAMES = {org:"Организация", acc:"Банк / счёт", cur:"Валюта", dept:"Подразделение", cf:"Тип расхода CF", zone:"Зона ответственности"};
 function mapTarget(m){ const L = {org:DB.orgs, cur:DB.currencies, dept:DB.depts, cf:DB.cfTypes, zone:DB.zones}[m.kind]; const x = m.kind==="acc" ? acc(m.target) : (L||[]).find(y=>y.id===m.target); return x ? (x.name||x.code) : m.target; }
 function mappingsPanel(){
@@ -687,13 +614,41 @@ function viewSettings(){
       <span class="muted">Документы СБДС и РКО с этими хозяйственными операциями <b>загружаются</b> и проверяются на двойной учёт: программа ищет ручную конвертацию или переброску с тем же счётом списания, валютой и суммой, с датой в пределах 3 дней (или с тем же номером документа ERP). Найдено одно соответствие — повторное движение не создаётся. Соответствия нет или их несколько — документ ждёт решения казначея и до него в расчёт не входит. Результаты видны в реестре загрузки и в карточке документа (ДР-01). Вид операции сам по себе документ не исключает. По одной операции на строку; окончательный перечень согласуется отдельно.</span>
       <textarea rows="5" onchange="setSetting('excludedOps',this.value.split('\\n').map(x=>x.trim()).filter(Boolean),'Изменение списка контролируемых операций')">${esc(S.excludedOps.join("\n"))}</textarea></div></div>
   </div>
-  <div class="split">${stateMapPanel()}${mappingsPanel()}</div>
+  ${mappingsPanel()}
   <div class="panel"><header><h2>Daily Balance</h2><span class="tzref">ТР-91…105</span></header><div class="body row"><span class="muted">Время сдачи, календарь, допуски по валютам и позиции модуля — на отдельном экране.</span><button class="btn" onclick="go('dbsettings')">Настройки Daily Balance</button></div></div>
   <div class="panel"><header><h2>Данные прототипа</h2></header><div class="body row">
     <button class="btn" onclick="exportBackup()">Сохранить резервную копию (.json)</button>
     <label class="btn">Восстановить из копии<input type="file" accept=".json" style="display:none" onchange="importBackup(this)"></label>
     <div style="flex:1"></div><button class="btn danger" onclick="resetAll()">Удалить все данные (журнал аудита сохранится)</button></div>
-    <div class="body" style="padding-top:0"><span class="muted">Данные хранятся на сервере в базе SQLite. Резервную копию базы делает ИТ (ТР-51); здесь можно выгрузить и восстановить данные целиком.</span></div></div>`;
+    <div class="body" style="padding-top:0"><span class="muted">Данные хранятся на сервере в базе SQLite. Резервную копию базы делает ИТ (ТР-51); здесь можно выгрузить и восстановить данные целиком.</span></div></div>
+  ${purgePanel()}`;
+}
+/* ДР-05-21.10: разовая очистка тестовой базы — документы, запись которых создана в выбранный день */
+let PG = {day:"2026-10-21", ops:true, plan:null, confirm:"", done:null};
+function purgePanel(){
+  const P = PG.plan;
+  return `<div class="panel"><header><h2>Разовая очистка тестовой базы</h2><span class="tzref">ДР-05-21.10</span></header><div class="body stack">
+    <span class="muted">Удаляет документы, запись которых создана в выбранный день (по Москве), — независимо от даты самого документа, состояния и пометки на удаление, вместе со строками, распределением по кошелькам, версиями, признаками ERP и связанными записями. Документы, созданные в другие дни, не меняются. Перед удалением сервер сохраняет полную резервную копию базы в файл рядом с базой; дополнительно скачайте копию кнопкой выше. Удаление физическое и необратимо — только для тестовой базы.</span>
+    <div class="row"><label class="fld"><span>Дата создания записей</span><input type="date" value="${PG.day}" onchange="PG.day=this.value;PG.plan=null;PG.done=null;render()"></label>
+      <label class="chk"><input type="checkbox" ${PG.ops?"checked":""} onchange="PG.ops=this.checked;PG.plan=null;render()"> и внутренние операции, созданные в этот день</label>
+      <button class="btn" onclick="purgePreview()">Показать, что будет удалено</button></div>
+    ${P?`<div class="alert ${P.docs.length||P.ops.length?"warn":"info"}">Будет удалено документов: <b>${P.docs.length}</b>${PG.ops||P.ops.length?`, внутренних операций: <b>${P.ops.length}</b>`:""}. Останется документов: ${P.keepDocs}.</div>
+      ${P.docs.length?`<div class="tbl-wrap" style="max-height:240px"><table class="mini"><thead><tr><th>Тип</th><th>Номер</th><th>Дата документа</th><th>Источник</th><th>Создан</th></tr></thead><tbody>${P.docs.slice(0,300).map(x=>`<tr><td>${esc(x.type)}</td><td class="notr">${esc(x.no||"")}</td><td>${fmtD(x.date)}</td><td>${x.source==="file"?"файл ERP":"вручную"}</td><td>${fmtDT(x.created)}</td></tr>`).join("")}</tbody></table></div>`:""}
+      ${P.docs.length||P.ops.length?`<div class="row"><label class="fld"><span>Для подтверждения введите дату ещё раз</span><input type="date" value="${PG.confirm}" onchange="PG.confirm=this.value;render()"></label>
+        <button class="btn danger" ${PG.confirm===PG.day?"":"disabled"} onclick="purgeApply()">Создать резервную копию и удалить</button></div>`:""}`:""}
+    ${PG.done?`<div class="alert ok">Удалено документов: <b>${PG.done.docs}</b>, внутренних операций: <b>${PG.done.ops}</b>. Резервная копия на сервере: <code>${esc(PG.done.backup)}</code>. Остатки пересчитаны без удалённых записей.</div>`:""}
+  </div></div>`;
+}
+async function purgePreview(){
+  const r = await apiRaw("/api/admin/purge/preview", {day:PG.day, ops:PG.ops});
+  if(!r.ok) return showErrors(r);
+  PG.plan = r.plan; PG.confirm = ""; PG.done = null; render();
+}
+async function purgeApply(){
+  if(!confirm(`Удалить документов: ${PG.plan.docs.length}${PG.plan.ops.length?`, внутренних операций: ${PG.plan.ops.length}`:""}, созданных ${fmtD(PG.day)}? Действие необратимо; перед удалением сервер сохранит резервную копию.`)) return;
+  const r = await mutate("/api/admin/purge", {day:PG.day, ops:PG.ops, confirm:PG.confirm});
+  if(!r.ok) return showErrors(r);
+  PG.done = r.result; PG.plan = null; PG.confirm = ""; render();
 }
 
 /* ============================================================

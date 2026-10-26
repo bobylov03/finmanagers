@@ -150,7 +150,7 @@ function walletPicker(key, selected, onToggle, {label="Кошельки", all="�
   return `<div class="fld popwrap"><span>${esc(label)}</span>
     <button type="button" class="picker ${selected.length?"set":""}" onclick="togglePop('${id}',event)" aria-expanded="${open}"><span>${esc(txt)}</span><span class="caret"></span></button>
     ${open?`<div class="pop pop-left">${walletChecklist(selected,onToggle)}${noWallet && seesNoWallet(me())?`<div class="msel" style="border-top:1px solid var(--line-soft);margin-top:4px;padding-top:4px"><label class="chk"><input type="checkbox" ${selected.includes(NOWAL)?"checked":""} onchange="${onToggle}('${NOWAL}',this.checked)"> <span title="Строки, не распределённые по кошелькам (ТР-23)"><i>Без кошелька</i> <span class="muted">· служебная группа</span></span></label></div>`:""}
-      <div class="pop-foot">${onAll?`<button type="button" class="btn sm" onclick="${onAll}">Выбрать все</button>`:""}${onClear?`<button type="button" class="btn sm" onclick="${onClear}">Снять</button>`:""}<div style="flex:1"></div><button type="button" class="btn sm primary" onclick="closePop()">Готово</button></div></div>`:""}</div>`;
+      <div class="pop-foot">${onAll?`<button type="button" class="btn sm" onclick="${onAll}">Выбрать все</button>`:""}${onClear?`<button type="button" class="btn sm" onclick="${onClear}">Сбросить выбор</button>`:""}<div style="flex:1"></div><button type="button" class="btn sm primary" onclick="closePop()">Готово</button></div></div>`:""}</div>`;
 }
 /* --- переключатель-флажок в виде «чипа» --- */
 function chip(on, onclick, label){ return `<button type="button" class="chip ${on?"on":""}" aria-pressed="${!!on}" onclick="${onclick}">${label}</button>`; }
@@ -285,7 +285,7 @@ function exportTable(tableId, name){
       while(taken.has(ri+":"+ci)) ci++;
       const cs = Math.max(1, +td.getAttribute("colspan")||1), rs = Math.max(1, +td.getAttribute("rowspan")||1);
       let v = (td.tagName==="TH" ? td.textContent : td.innerText).replace(/[\u00a0\u202f]/g," ").replace(/\s*\n\s*/g,"; ").trim();
-      if(td.tagName!=="TH" && td.classList.contains("num")){ const n = parseNum(v.replace(/^\+/,"").replace(/[A-Z]{3}$/,"").trim()); if(isFinite(n)) v = n; }
+      if(td.tagName!=="TH" && td.classList.contains("num")){ const n = parseNum(v.replace(/^≈\s*/,"").replace(/^\+/,"").replace(/[A-Z]{3}$/,"").trim()); if(isFinite(n)) v = n; }
       row[ci] = ri < headN ? {v, bold:true} : v;
       for(let r=0;r<rs;r++) for(let c=0;c<cs;c++){ taken.add((ri+r)+":"+(ci+c)); if(r||c){ (rows[ri+r] = rows[ri+r] || [])[ci+c] = rows[ri+r][ci+c] ?? ""; } }
       if(cs>1 || rs>1) merges.push(`${colL(ci)}${ri+1}:${colL(ci+cs-1)}${ri+rs}`);

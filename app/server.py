@@ -15,7 +15,7 @@ from . import actions as A
 from . import daily as DB_
 from . import importer as I
 from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
-                    own_wallets, recon, reconciled_days, doc_eval, dup_state, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
+                    own_wallets, recon, reconciled_days, doc_eval, dup_state, rates_status, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
 from .mailer import mail_configured, send_notifications
 from .store import Store
 from .util import now_iso, today_iso
@@ -268,6 +268,7 @@ def create_app(db_path=None, start_scheduler=True):
             out["dbPositions"] = S["dbPositions"]
             out["dbStart"] = DB_.opening_control(c)
         out["exchangeLog"] = S["exchangeLog"] if adm else []
+        out["ratesStatus"] = rates_status(c) if (adm or has(u, "owner") or has(u, "fcHead") or has(u, "treasurer")) else None   # ДР-02-23.10
         out["closedChanges"] = S["closedChanges"] if (adm or has(u, "treasurer")) else []
         rows = recon(c)
         if not (adm or has(u, "owner")):
@@ -357,13 +358,6 @@ def create_app(db_path=None, start_scheduler=True):
     def doc_dup(doc_id):
         p = body()
         return act(A.dup_decide, doc_id, p.get("action"), p.get("manual"))
-
-    @app.post("/api/statemap")
-    def statemap():
-        p = body()
-        if p.get("items") is not None:
-            return act(A.save_state_values, p.get("items"))
-        return act(A.save_state_value, p.get("value"), p.get("meaning"))
 
     @app.post("/api/mappings")
     def mappings():
@@ -538,6 +532,29 @@ def create_app(db_path=None, start_scheduler=True):
             store.replace_all(data, keep_user=me)
             store.audit(me, "Восстановление из резервной копии", p.get("fileName") or "", "данные заменены; журнал аудита сохранён без изменений")
         return {"ok": True}
+
+    @app.post("/api/admin/purge/preview")
+    def purge_preview():
+        p = body()
+        with store.lock:
+            return {"ok": True, "plan": A.purge_plan(C(), g.user, p.get("day"), p.get("ops", True) is not False)}
+
+    @app.post("/api/admin/purge")
+    def purge():
+        """ДР-05-21.10: разовая очистка — сначала резервная копия всей базы рядом с файлом базы, затем удаление."""
+        A.need_admin(g.user)
+        p = body()
+        if p.get("confirm") != p.get("day"):
+            raise A.ApiError(["Для подтверждения введите дату создания ещё раз"])
+        with store.tx():
+            data = {k: v for k, v in store.S.items()}
+            data["users"] = [dict(u, pw=u.get("pw")) for u in store.S["users"]]
+            folder = os.path.dirname(os.path.abspath(store.path))
+            fname = os.path.join(folder, f"backup-before-purge-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
+            with open(fname, "w", encoding="utf-8") as fh:
+                json.dump({"format": "wallets-mvp", "created": now_iso(), "data": data}, fh, ensure_ascii=False)
+            res = A.purge_apply(C(), g.user, p.get("day"), p.get("ops", True) is not False, os.path.basename(fname))
+        return jsonify({"ok": True, "result": res, "version": store.version})
 
     @app.post("/api/admin/reset")
     def reset():

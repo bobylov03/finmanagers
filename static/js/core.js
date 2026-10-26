@@ -309,6 +309,20 @@ function rateAt(curId, date){
   let r = null; for(const x of a){ if(x.date <= date) r = x; else break; }
   return r ? r.rate : null;
 }
+/* ДР-02-23.10: актуальность курса ERP на дату отчёта. Курс актуален, если есть курс на последний рабочий день не позже даты
+   (для выходных и праздников — курс последнего рабочего дня; календарь — из настроек Daily Balance). Иначе — «Предварительный расчёт»
+   по последнему доступному курсу с его датой; курса нет совсем — USD-эквивалент не считается. */
+function isWorkdayD(d){ const S = DB.settings; if((S.dbHolidays||[]).includes(d)) return false; if((S.dbWorkdays||[]).includes(d)) return true;
+  const w = new Date(d+"T00:00:00Z").getUTCDay() || 7; return !(S.dbWeekends||[6,7]).includes(w); }
+function lastWorkday(d){ let x = d; for(let i=0;i<40;i++){ if(isWorkdayD(x)) return x; x = addDays(x,-1); } return d; }
+let RATE_INFO = {};
+function rateInfo(curId, date){
+  if(isUSD(curId)) return {rate:1, date, st:"ok", usd:true};
+  const key = curId+"|"+date; if(RATE_INFO[key]) return RATE_INFO[key];
+  const a = rateIdx()[curId] || []; let r = null; for(const x of a){ if(x.date <= date) r = x; else break; }
+  const need = lastWorkday(date);
+  return RATE_INFO[key] = !r ? {rate:null, date:null, st:"none", need} : {rate:r.rate, date:r.date, st: r.date >= need ? "ok" : "prelim", need};
+}
 /** Сумма в USD: делим на курс «единиц за 1 USD», округляем только итог (МД-17) */
 function toUSD(sum, curId, date, rate){ const k = rate || rateAt(curId, date); if(!k) return NaN; return r2(sum / k); }
 
@@ -440,7 +454,7 @@ function applyRules(doc, {force=false}={}){
    ============================================================ */
 let FACTS = null;
 let VF_CACHE = {}, NF_CACHE = {};
-function inval(){ FACTS = null; RATE_IDX = null; VIS_CACHE = {}; RECON = null; VF_CACHE = {}; NF_CACHE = {}; }
+function inval(){ FACTS = null; RATE_IDX = null; RATE_INFO = {}; VIS_CACHE = {}; RECON = null; VF_CACHE = {}; NF_CACHE = {}; }
 
 /** Участвует ли документ в расчёте (ТР-07, ТР-08, ТР-72, ТР-74) */
 /* ДР-04: три состояния; «Нет данных» — признаки ERP не получены (не предполагаемое состояние).
@@ -464,7 +478,8 @@ function docCounts(d){
   return true;
 }
 /** Метка «Не исполнен банком»: учитываемый СБДС, по которому нет подтверждённого исполнения банком (ТР-09, ДР-05) */
-const notBankDone = d => d.type==="СБДС" && docCounts(d) && (d.ev ? d.ev.kf===FAR : !d.bankDate);
+/* ДР-04-21.10: «Не исполнен банком» — только при полученном признаке «Проведено банком» = Нет; при «Да» без даты — отдельно «нет даты» */
+const notBankDone = d => d.type==="СБДС" && docCounts(d) && (d.ev ? d.ev.flags && d.ev.flags.bank===false : !d.bankDate);
 /** ДР-08: служебная отметка «Требует проверки» — существенные изменения ERP (ТР-85), противоречие признаков (ДР-05) или двойной учёт (ДР-01) */
 const dupPending = d => !!(d.dupInfo && DUP_PENDING.has(d.dupInfo.st) && docState(d)==="posted" && !d.excluded);
 const needsReview = d => !!d.review || !!(d.ev && d.ev.conflict && !d.excluded) || dupPending(d);
@@ -479,13 +494,14 @@ function reviewReasons(d){
 }
 /** Что считать в расчёте: удержанное прежнее движение до проверки казначеем (ТР-85) или текущее */
 function docMovement(d){ if(d.held) return [Object.assign({}, d, d.held, {id:d.id, type:d.type}), !!d.held.counted]; return [d, docCounts(d)]; }
-function docStateTag(d){
+function docStateTag(d, card){
   const st = docState(d);
   const why = d.excluded ? "нет в последней загрузке его периода (ТР-62)" : d.source==="manual" && DB.settings.switchDate && d.date >= DB.settings.switchDate ? `заменён данными 1С с ${fmtD(DB.settings.switchDate)} (ТР-72)` : "";
   let h = st==="nodata" ? `<span class="tag" title="Признаки ERP не получены — документ не считается проведённым (ДР-07)">Нет данных</span>` : st==="posted" ? `<span class="tag ok">Проведён</span>` : st==="notposted" && d.excluded ? `<span class="tag" title="${esc(why)}">Не проведён: нет в загрузке</span>` : st==="notposted" ? `<span class="tag">Не проведён${d.statusRaw?`: <span class="notr">${esc(d.statusRaw)}</span>`:d.status&&d.status!=="Не проведён"?`: ${esc(d.status.toLowerCase())}`:""}</span>`
     : st==="excluded" ? `<span class="tag" title="${esc(why)}">Исключён</span>` : `<span class="tag off" ${why?`title="${esc(why)}"`:""}>Помечен на удаление${d.source==="manual"&&!d.deleted&&why?" · заменён данными 1С":""}</span>`;
   if(DB.settings.startDate && d.date < DB.settings.startDate && st==="posted") h += ` <span class="tag warn">до начала учёта</span>`;
   if(needsReview(d)) h += ` <span class="tag warn" title="${esc(reviewReasons(d).join("; "))}">Требует проверки</span>`;
+  if(!card) return h;   // ДР-01-21.10: в списке — состояние и «Требует проверки»; признаки ERP и неполнота данных — в карточке
   const miss = missingData(d);
   if(miss.length && st!=="nodata") h += ` <span class="tag" title="Не получено из ERP (ДР-07)">Нет данных: ${esc(miss.map(k=>FLAG_NAMES[k].toLowerCase()).join(", "))}</span>`;
   if(d.dupInfo && d.dupInfo.st==="matched" && st==="posted") h += ` <span class="tag info" title="${esc(d.dupInfo.res)}">Введён вручную</span>`;
@@ -535,9 +551,12 @@ function facts(){
       const c = d0_.sentConf; kp = c ? (dd < (c > d.date ? c : d.date) ? dd : (c > d.date ? c : d.date)) : dd; }
     d.lines.forEach((l,i)=>{
       const lu = isFinite(l.usd) && l.usd!==null ? l.usd : toUSD(l.sum, d.cur, d.date);
+      // ДР-02-21.10, ТР-58: фактический оборот СБДС в USD — по курсу ERP на дату исполнения банком; USD документа из ERP (usdErp) не меняется
+      const kBank = sbds && dd!==FAR ? rateAt(d.cur || (a&&a.cur), dd) : null;
       linePartsOf(l).forEach(p=>{
+        const uErp = sg*(l.sum ? lu*p.sum/l.sum : 0);
         out.push({date:dd, kp, docDate:d.date, sbds, acc:d.acc, org:d.org, cur:d.cur || (a&&a.cur), wallet:p.wallet||null, sum:sg*p.sum,
-          usd:sg*(l.sum ? lu*p.sum/l.sum : 0), cat: sg>0 ? "in" : "out", cf:l.cf, notBank: sbds && dd===FAR, src:{k:"doc", id:d.id, line:i}}); });
+          usd: kBank ? r2(sg*p.sum/kBank) : uErp, usdErp:uErp, cat: sg>0 ? "in" : "out", cf:l.cf, notBank: sbds && dd===FAR, src:{k:"doc", id:d.id, line:i}}); });
     });
   });
   DB.ops.forEach(o=>{
@@ -571,7 +590,15 @@ function balances(date, list, keyFn){
 /** Кф и Кп на дату по фильтру: {kf:{cur:sum}, kp:{cur:sum}} */
 function kfkp(list, date){ const kf = {}, kp = {}; list.forEach(f=>{ if(f.date<=date) kf[f.cur]=(kf[f.cur]||0)+f.sum; if((f.kp||f.date)<=date) kp[f.cur]=(kp[f.cur]||0)+f.sum; }); return {kf, kp}; }
 /** Сумма по валютам → USD по курсу на дату (ТР-58) */
-function usdOf(byCur, date){ let s = 0, miss = []; for(const [c,v] of Object.entries(byCur)){ if(!v) continue; const k = rateAt(c,date); if(!k){ miss.push(curCode(c)); continue; } s += v/k; } return {usd:r2(s), miss}; }
+function usdOf(byCur, date){ let s = 0, miss = [], prelim = [];
+  for(const [c,v] of Object.entries(byCur)){ if(!v || Math.abs(v)<0.005) continue; const I = rateInfo(c,date); if(!I.rate){ miss.push(curCode(c)); continue; }
+    if(I.st==="prelim") prelim.push(`${curCode(c)} от ${fmtD(I.date)}`); s += v/I.rate; }
+  return {usd:r2(s), miss, prelim}; }
+/** USD-показатель с отметкой «Предварительный расчёт» (курс не на дату отчёта) или «нет курса» (ДР-02-23.10) */
+function usdMark(u){ const p = (u.prelim||[]).length, m = (u.miss||[]).length;
+  if(!p && !m) return {cls:"", pre:"", title:""};
+  const t = [m?`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана, итог неполный`:"", p?`Предварительный расчёт: курс ${u.prelim.join(", ")}`:""].filter(Boolean).join("; ");
+  return {cls:"prelim", pre:"≈ ", title:t}; }
 
 /* ============================================================
    7. СВЕРКА С 1С (ТР-41…43)
