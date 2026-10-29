@@ -1896,3 +1896,9 @@ Object.assign(I18N, {
 "нет курса — USD не считается": "no rate — USD not calculated",
 "Поступления со знаком {0}, расходы со знаком {1}. Обороты в {2} — по курсам ERP на даты фактических операций (СБДС — на дату исполнения банком), остатки — по курсу ERP на конец шага; разница показана строкой {3} — она расчётная и денежных движений не создаёт ({4}). При выборе валюты отчёт показывает суммы в валюте счёта и в {5} ({6}).": "Receipts are shown with {0}, expenses with {1}. Turnover in {2} uses ERP rates on the actual operation dates (non-cash payments — on the bank execution date), balances use the ERP rate at the end of each step; the difference is the {3} row — it is calculated and creates no money movements ({4}). When a currency is selected, the report shows amounts in the account currency and in {5} ({6}).",
 });
+/* ТЗ 27.10 (v1.5.5) */
+Object.assign(I18N, {
+"Неподдерживаемый формат файла «История согласования».": "Unsupported “Approval history” file format.",
+"неподдерживаемый формат — файл отклонён": "unsupported format — file rejected",
+"Файл отклонён целиком: предпросмотр не сформирован, загрузка заблокирована, ранее загруженные документы, признаки ERP и остатки не изменены (ДР-{0}-{1}.{2}).": "The whole file was rejected: no preview was built, upload is blocked, previously loaded documents, ERP flags and balances are unchanged (CR-{0}-{1}.{2}).",
+});

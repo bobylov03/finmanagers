@@ -165,19 +165,21 @@ function viewImport(){
   if(IMP.err) pv = `<div class="alert err">${esc(IMP.err)}</div>`;
   else if(P && T==="exp"){
     const S = IMP.sel; const errN = P.errors.length; const nothing = !P.add.length&&!P.upd.length&&!P.exc.length;
-    pv = `<div class="panel"><header><h2>Реестр загрузки · ${esc(IMP.fileName)}</h2><span class="hint">отчёт ERP «История согласования», 17 столбцов (ТР-90) · ${P.rows||0} ${plural(P.rows||0,"строка","строки","строк")}</span></header><div class="body">
+    pv = `<div class="panel"><header><h2>Реестр загрузки · ${esc(IMP.fileName)}</h2><span class="hint">${P.format==="unsupported"?`<span class="neg">неподдерживаемый формат — файл отклонён</span>`:`отчёт ERP «История согласования», 17 столбцов (ТР-90) · ${P.rows||0} ${plural(P.rows||0,"строка","строки","строк")}`}</span></header><div class="body">
       ${P.allOrgs.length?`<div class="filters" style="margin-bottom:12px">
         <div class="fld"><span>Загрузка заменяет период для организаций (ТР-62)</span><div class="msel">${P.allOrgs.map(o=>`<label class="chk"><input type="checkbox" ${S.orgs.includes(o)?"checked":""} onchange="impSelOrg('${o}',this.checked)"> ${esc(nm(org(o)))}</label>`).join("")}</div></div>
         <label class="fld"><span>Даты с</span><input type="date" value="${S.from}" onchange="IMP.sel.from=this.value;impPreview().then(render)"></label>
         <label class="fld"><span>по</span><input type="date" value="${S.to}" onchange="IMP.sel.to=this.value;impPreview().then(render)"></label>
         <span class="muted" style="max-width:48ch">Документы этих организаций и дат, которых нет в файле, будут исключены — они показаны в реестре строками «Выйдет из расчёта». Повторная загрузка того же файла ничего не меняет.</span></div>`:""}
-      ${errN && !(P.registry||[]).length?`<div class="alert err"><b>${P.format==="unsupported"?"Файл отклонён.":"Файл не распознан:"}</b> ${P.errors.map(e=>esc(e.msg)).join("; ")}${P.format==="unsupported"?"":". Нужен отчёт «История согласования» из 17 столбцов (ТР-90) — скачайте шаблон."}</div>`:""}
+      ${errN && !(P.registry||[]).length && (P.reasons||[]).length?`<div class="alert err"><b>Неподдерживаемый формат файла «История согласования».</b> Файл отклонён целиком: предпросмотр не сформирован, загрузка заблокирована, ранее загруженные документы, признаки ERP и остатки не изменены (ДР-01-27.10.2026).
+        <ul style="margin:6px 0 4px 18px">${P.reasons.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>Нужен отчёт ERP из 17 столбцов в утверждённом порядке: ${HIST17_HEAD.map((h,i)=>`${i+1}. ${esc(h)}`).join("; ")}. Скачайте шаблон.</div>`
+        : errN && !(P.registry||[]).length?`<div class="alert err"><b>Файл не распознан:</b> ${P.errors.map(e=>esc(e.msg)).join("; ")}</div>`:""}
       ${errN && (P.registry||[]).length && (P.registry||[]).length?`<div class="alert err"><b>Ошибок: ${errN}.</b> Реестр с ошибками не загружается, частичная загрузка запрещена — иначе пропущенный платёж был бы исключён как отсутствующий (ТР-110). Исправьте ошибки прямо в реестре: выберите значение из справочника (сопоставление запомнится) или поправьте ячейку (ТР-109).</div>`:""}
       ${P.closed.length?`<div class="alert warn">Затрагивает закрытый период: ${P.closed.length} док. Изменения ERP принимаются (1С — мастер) и попадут в «Изменения в закрытом периоде» (ТР-56, ТР-89).</div>`:""}
       ${(P.significant||[]).length?`<div class="alert warn">Существенные изменения уже учтённых документов: ${P.significant.length}. После загрузки они уйдут на проверку казначею, до проверки в расчёте останется прежнее движение (ТР-85).</div>`:""}
       ${P.format==="erp17" && (P.registry||[]).some(r=>r.flags && r.flags.posted==null && r.st!=="error" && r.st!=="excluded")?`<div class="alert warn">Признаки ERP не получены у ${new Set((P.registry||[]).filter(r=>r.flags && r.flags.posted==null && r.st!=="error").map(r=>r.guid)).size} док.: они загрузятся со статусом «Нет данных» и не войдут в расчёт, пока признаки не будут получены (ДР-07). Загрузите их на вкладке <a class="lnk" onclick="impReset('flags');render()">«Признаки документов ERP»</a> — до или после этой загрузки.</div>`:""}
       ${dupPanel(P)}
-      ${registryTable(P)}
+      ${P.format==="unsupported"?"":registryTable(P)}
       <div class="row" style="margin-top:14px"><button class="btn primary" ${errN||nothing?"disabled":""} onclick="applyExp()" title="${errN?"Сначала исправьте все ошибки":""}">Загрузить</button>
         <button class="btn" onclick="impReset('exp');render()">Отменить</button>
         ${errN?`<span class="neg">Кнопка станет активной, когда ошибок будет 0</span>`:nothing?`<span class="muted">Изменений нет — данные уже совпадают с файлом.</span>`:`<span class="muted">Загрузка подтверждается целиком: добавится ${P.add.length}, изменится ${P.upd.length}, исключится ${P.exc.length} док.</span>`}</div>

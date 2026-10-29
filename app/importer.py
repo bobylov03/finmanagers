@@ -212,6 +212,67 @@ HIST17_REQ = ["guid", "no", "date", "org", "accNo", "cur", "docSum"]
 HIST17_HEAD = ["GUID документа (ERP)", "Номер документа (ERP)", "Дата документа (ERP)", "Сумма (USD)", "Тип расхода CF", "Подразделение", "Заметки",
                "Получатель", "Организация", "Банк", "Р/сч", "Валюта", "Сумма в валюте документа", "Курс", "Дата проведения банком",
                "Хозяйственная операция", "Тип документа ERP"]
+HIST17_KEYS = ["guid", "no", "date", "usd", "cf", "dept", "purpose", "cpty", "org", "bank", "accNo", "cur", "docSum", "rate", "bankDate", "op", "erpType"]
+OLD_FIELDS = {norm("Текущий этап"): "Текущий этап", norm("Текущее состояние"): "Текущее состояние"}
+UNSUPPORTED = "Неподдерживаемый формат файла «История согласования»"
+
+
+def _col_letter(i):
+    s_, i = "", i + 1
+    while i > 0:
+        i, r = divmod(i - 1, 26)
+        s_ = chr(65 + r) + s_
+    return s_
+
+
+def check_hist17(rows):
+    """ДР-01-27.10.2026: строгая проверка структуры до обработки строк. Шапка — ровно 17 утверждённых столбцов в утверждённом порядке;
+    лишние, дублирующиеся, переименованные, переставленные и устаревшие столбцы не допускаются. Пустые столбцы без названия и без данных
+    (объединённые ячейки выгрузки ERP) не считаются. Возвращает (строка шапки, {поле: колонка}, [причины отказа])."""
+    want = [norm(h) for h in HIST17_HEAD]
+    g = norm(HIST17_HEAD[0])
+    hi = next((i for i, r in enumerate(rows[:20]) if any(norm(c) == g for c in (r or []))), -1)
+    if hi < 0:
+        old = sorted({OLD_FIELDS[norm(c)] for r in rows[:20] for c in (r or []) if norm(c) in OLD_FIELDS})
+        why = ["не найдена строка заголовков с обязательным столбцом «GUID документа (ERP)»"]
+        if old:
+            why.append("есть устаревшие столбцы: " + ", ".join(f"«{x}»" for x in old))
+        return hi, {}, why
+    head = rows[hi] or []
+    body = rows[hi + 1:]
+    cols = []   # (номер колонки, нормализованное название, исходное название)
+    extra_blank = []
+    for j, c in enumerate(head):
+        if txt(c):
+            cols.append((j, norm(c), txt(c)))
+        elif any(j < len(r or []) and txt(r[j]) for r in body[:5000]):
+            extra_blank.append(j)
+    got = [c[1] for c in cols]
+    why = []
+    missing = [HIST17_HEAD[i] for i, w in enumerate(want) if w not in got]
+    if missing:
+        why.append("нет обязательных столбцов: " + ", ".join(f"«{x}»" for x in missing))
+    old = [c[2] for c in cols if c[1] in OLD_FIELDS]
+    if old:
+        why.append("устаревшие столбцы, исключённые из формата: " + ", ".join(f"«{x}»" for x in old))
+    extra = [c[2] for c in cols if c[1] not in want and c[1] not in OLD_FIELDS]
+    if extra:
+        why.append("лишние или переименованные столбцы: " + ", ".join(f"«{x}»" for x in extra))
+    dup = sorted({c[2] for c in cols if c[1] in want and got.count(c[1]) > 1})
+    if dup:
+        why.append("столбцы повторяются: " + ", ".join(f"«{x}»" for x in dup))
+    if extra_blank:
+        why.append("столбцы без названия с данными: " + ", ".join(_col_letter(j) for j in extra_blank[:10]))
+    if not why and got != want:
+        pos = next(i for i, (a, b) in enumerate(zip(got, want)) if a != b)
+        why.append(f"нарушен порядок столбцов: на месте {pos + 1} ожидается «{HIST17_HEAD[pos]}», в файле — «{cols[pos][2]}»")
+    m = {}
+    if not why:
+        idx = {c[1]: c[0] for c in cols}
+        m = {k: idx[w] for k, w in zip(HIST17_KEYS, want)}
+    return hi, m, why
+
+
 FIELD_NAMES = {"guid": "GUID", "accNo": "Р/сч", "bank": "банк", "type": "тип", "op": "хоз. операция", "no": "номер ERP", "date": "дата", "org": "организация", "acc": "счёт",
                "cur": "валюта", "status": "состояние", "stage": "этап", "state": "состояние ERP", "approved": "согласование", "bankDate": "дата проведения банком",
                "sum": "сумма", "usd": "сумма USD", "docSum": "сумма документа", "rate": "курс", "dept": "подразделение", "cf": "тип расхода CF",
@@ -282,26 +343,24 @@ def preview_exp(C, p):
     fixes = p.get("fixes") or {}
     # лист с данными ищется по заголовкам: в книге могут быть листы-пояснения
     ok_ = lambda s_, spec, req: not [k for k in map_header(s_["rows"], spec)[2] if k in req]
-    # ДР-03-21.10: принимается только утверждённый отчёт из 17 столбцов (ТР-90); прежние форматы отклоняются без изменения данных
+    # ДР-03-21.10, ДР-01-27.10.2026: принимается только утверждённый отчёт из 17 столбцов (ТР-90). Структура проверяется ДО разбора строк,
+    # сопоставления GUID и замещения периода; при несоответствии — отказ целиком, без предпросмотра и без изменения данных
     fmt_ = "erp17"
-    SPEC, REQ = HIST17_SPEC, HIST17_REQ
-    sh = next((s_ for s_ in sheets if ok_(s_, SPEC, REQ)), None)
+    SPEC = HIST17_SPEC
     errors, warns, skip70, skip_out, registry = [], [], [], [], []
-    empty = {"format": fmt_, "errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [], "upd": [], "same": [], "exc": [], "closed": [],
-             "allOrgs": [], "rows": 0, "sel": p.get("sel"), "registry": [], "unmapped": [], "significant": [], "dup": []}
-    if not sh:
-        old = next((s_ for s_ in sheets if ok_(s_, OLD_HIST_SPEC, OLD_HIST_REQ) or ok_(s_, OLD_TR61_SPEC, OLD_TR61_REQ)), None)
-        if old:
-            empty["format"] = "unsupported"
-            errors.append({"row": "—", "msg": "Формат файла не поддерживается: это прежний формат «Истории согласования» (с полями «Текущий этап» и «Текущее состояние») "
-                                               "или формат ТР-61. Загрузите отчёт ERP «История согласования» из 17 столбцов (ТР-90). Ранее загруженные данные не изменены."})
-            return empty, None
-        sh = sheets[0]
-    hi, m, missing = map_header(sh["rows"], SPEC)
-    miss = [k for k in missing if k in REQ]
-    if miss:
-        errors.append({"row": hi + 1, "msg": "Нет обязательных колонок отчёта из 17 столбцов (ТР-90): " + ", ".join(SPEC[k][0] for k in miss)})
+    empty = {"format": "unsupported", "errors": errors, "warns": warns, "skip70": skip70, "skipOut": skip_out, "add": [], "upd": [], "same": [], "exc": [], "closed": [],
+             "allOrgs": [], "rows": 0, "sel": p.get("sel"), "registry": [], "unmapped": [], "significant": [], "dup": [], "reasons": []}
+    checks = [(s_, check_hist17(s_["rows"])) for s_ in sheets]
+    cand = [(s_, c) for s_, c in checks if c[0] >= 0]   # листы, где есть строка заголовков отчёта
+    if not cand:
+        empty["reasons"] = checks[0][1][2] if checks else ["файл пуст"]
+    elif cand[0][1][2]:
+        empty["reasons"] = cand[0][1][2]
+    if empty["reasons"]:
+        errors.append({"row": "—", "msg": f"{UNSUPPORTED}: " + "; ".join(empty["reasons"]) + ". Нужен отчёт ERP из 17 столбцов в утверждённом порядке (ТР-90). "
+                                         "Предпросмотр не сформирован, ранее загруженные документы и остатки не изменены."})
         return empty, None
+    sh, (hi, m, _) = cand[0]
     S = C.S
     accs = S["accounts"] + S["cashboxes"]
     excl = {norm(x) for x in S["settings"].get("excludedOps") or []}

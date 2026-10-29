@@ -88,13 +88,9 @@ def visible_positions(C, u):
         return pos_list(C)
     if not has(u, "treasurer"):
         return []
-    own = own_wallets(C, u)
-    pf = pos_facts(C)
-    out = []
-    for p in pos_list(C):
-        if p.get("owner") == u["id"] or any(f["wallet"] in own for f in pf.get((p["acc"], p["cur"]), [])):
-            out.append(p)
-    return out
+    # ДР-02-27.10.2026: казначей видит в Daily Balance (сверка, остатки на утро, история, расшифровки) только позиции,
+    # назначенные ему в настройках Daily Balance; деньги его кошельков на чужих счетах доступа к этим счетам не дают
+    return [p for p in pos_list(C) if p.get("owner") == u["id"]]
 
 
 def wallet_label_map(C, u):
