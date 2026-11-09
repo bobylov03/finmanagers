@@ -135,7 +135,7 @@ Object.assign(I18N, {
 "Загрузить остатки 1С": "Upload 1C balances",
 "Загрузить остатки счетов и касс 1С для сверки": "Upload 1C account and cash balances for reconciliation",
 "Загрузить справочники 1С: организации, счета, кассы, валюты, курсы, типы расхода CF, подразделения, зоны": "Upload 1C reference data: companies, accounts, cash desks, currencies, rates, CF expense types, departments, zones",
-"Загрузить файл расходов (СБДС, РКО) из 1С": "Upload the 1C expense file (СБДС, РКО)",
+"Загрузить файл расходов (СБДС, РКО) из 1С": "Upload the 1C expense file (non-cash and cash payments)",
 "Загрузка заменяет период для организаций ({0})": "Upload replaces the period for companies ({0})",
 "Загрузка файла": "File upload",
 "Загрузка файла отклонена": "File upload rejected",
@@ -1901,4 +1901,18 @@ Object.assign(I18N, {
 "Неподдерживаемый формат файла «История согласования».": "Unsupported “Approval history” file format.",
 "неподдерживаемый формат — файл отклонён": "unsupported format — file rejected",
 "Файл отклонён целиком: предпросмотр не сформирован, загрузка заблокирована, ранее загруженные документы, признаки ERP и остатки не изменены (ДР-{0}-{1}.{2}).": "The whole file was rejected: no preview was built, upload is blocked, previously loaded documents, ERP flags and balances are unchanged (CR-{0}-{1}.{2}).",
+});
+/* ТЗ 30.10 (v1.5.6) */
+Object.assign(I18N, {
+"{0}: расчётная строка — денежных движений не создаёт, Кф/Кп в валюте счёта и сверку с банком не меняет": "{0}: a calculated row — it creates no money movements and does not change Kf/Kp in the account currency or the bank reconciliation",
+"Банк не исполнил": "Not executed by the bank",
+"нет данных: проведено банком": "no data: executed by bank",
+"предварительный расчёт: {0} валюта": "preliminary calculation: {0} currency",
+"предварительный расчёт: {0} валюты": "preliminary calculation: {0} currencies",
+"предварительный расчёт: {0} валют": "preliminary calculation: {0} currencies",
+"Документы 1С (История согласования, {0} столбцов)": "1C documents (Approval history, {0} columns)",
+"Последняя успешная загрузка справочников и курсов: {0}.": "Last successful reference and rate upload: {0}.",
+"Последняя загрузка с ошибками — {0}, см. {1}.": "Last upload with errors — {0}, see {1}.",
+"Пока курс не получен, {0}-показатели отчётов {1}, {2} и {3} считаются по последнему доступному курсу и помечены {4}. Загрузите недостающие курсы файлом (временный режим, {5}); после загрузки отчёты пересчитаются сами.": "Until the rate is received, {0} figures in the {1}, {2} and {3} reports use the latest available rate and are marked {4}. Upload the missing rates as a file (temporary mode, {5}); the reports recalculate after upload.",
+"не было": "none",
 });

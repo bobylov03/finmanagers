@@ -511,9 +511,9 @@ function ratesStatusPanel(){
     <div class="body flush"><table class="mini"><thead><tr><th>Валюта</th><th>Последний курс</th><th class="num">Курс</th><th>Статус</th><th>Пропущены рабочие дни (30 дней)</th></tr></thead><tbody>
     ${R.curs.map(x=>`<tr><td>${esc(x.code)}</td><td>${x.last?fmtD(x.last):"—"}</td><td class="num">${x.rate?fmtRate(x.rate):"—"}</td>
       <td>${x.st==="ok"?`<span class="tag ok">актуален</span>`:x.st==="prelim"?`<span class="tag warn">устарел — USD предварительный</span>`:`<span class="tag off">нет курса</span>`}</td>
-      <td>${x.gaps.length?`<span class="amber">${x.gaps.slice(-8).map(fmtD).join(", ")}${x.gaps.length>8?` и ещё ${x.gaps.length-8}`:""}</span>`:`<span class="muted">нет</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Валют, кроме USD, у счетов нет</td></tr>`}</tbody></table>
-    <p class="muted" style="padding:8px 12px;margin:0">Последняя успешная загрузка справочников и курсов: ${R.lastLoad?fmtDT(R.lastLoad):"не было"}.${R.lastError?` <span class="neg">Последняя загрузка с ошибками — ${fmtDT(R.lastError.t)}, см. «Журнал обмена».</span>`:""}
-    ${bad.length?" Пока курс не получен, USD-показатели отчётов «Деньги по кошелькам», «Расположение ДС» и «Фактический ДДС» считаются по последнему доступному курсу и помечены «≈». Загрузите недостающие курсы файлом (временный режим, ТР-64); после загрузки отчёты пересчитаются сами.":""}</p></div></div>`;
+      <td>${x.gaps.length?`<span class="amber">${x.gaps.slice(-8).map(fmtD).join(", ")}${x.gaps.length>8?` ${tl("и ещё","and")} ${x.gaps.length-8}${tl(""," more")}`:""}</span>`:`<span class="muted">нет</span>`}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Валют, кроме USD, у счетов нет</td></tr>`}</tbody></table>
+    <p class="muted" style="padding:8px 12px;margin:0"><span>Последняя успешная загрузка справочников и курсов: ${R.lastLoad?fmtDT(R.lastLoad):"не было"}.</span>${R.lastError?` <span class="neg">Последняя загрузка с ошибками — ${fmtDT(R.lastError.t)}, см. «Журнал обмена».</span>`:""}
+    <span>${bad.length?" Пока курс не получен, USD-показатели отчётов «Деньги по кошелькам», «Расположение ДС» и «Фактический ДДС» считаются по последнему доступному курсу и помечены «≈». Загрузите недостающие курсы файлом (временный режим, ТР-64); после загрузки отчёты пересчитаются сами.":""}</span></p></div></div>`;
 }
 function viewRefs(){
   const tabs = [["orgs","Организации",DB.orgs.length],["accounts","Банковские счета",DB.accounts.length],["cashboxes","Кассы",DB.cashboxes.length],["currencies","Валюты",DB.currencies.length],["rates","Курсы к USD",DB.rates.length],["cfTypes","Типы расхода CF",DB.cfTypes.length],["depts","Подразделения",DB.depts.length],["zones","Зоны ответственности",DB.zones.length]];
@@ -698,7 +698,7 @@ function viewMail(){
   ${DB.mailConfigured?`<div class="row" style="margin-bottom:12px"><button class="btn primary" onclick="sendMailNow()">Отправить письма сейчас</button></div>`:`<div class="alert warn">Почта на сервере не настроена — задайте SMTP_HOST и SMTP_FROM (см. README). Пока можно скачать письмо .eml.</div>`}
   <div class="panel"><div class="body flush"><table><thead><tr><th>Пользователь</th><th>E-mail</th><th class="num">Уведомлений</th><th>Содержание</th><th></th></tr></thead>
   <tbody>${users.map(({u,nf})=>`<tr><td>${esc(u.name)}<br><span class="muted">${esc(roleNames(u))}</span></td><td>${u.email?esc(u.email):`<span class="tag warn">не указан</span>`}</td>
-    <td class="num">${nf.length}</td><td style="font-size:11.5px">${nf.map(n=>`${esc(n.text)} <span class="tzref">${n.tr}</span>`).join("<br>") || `<span class="muted">нет</span>`}</td>
+    <td class="num">${nf.length}</td><td style="font-size:11.5px">${nf.map(n=>`${noteHtml(n)} <span class="tzref">${n.tr}</span>`).join("<br>") || `<span class="muted">нет</span>`}</td>
     <td>${nf.length&&u.email?`<button class="btn sm" onclick="downloadMail('${u.id}')">Письмо .eml</button>`:""}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 

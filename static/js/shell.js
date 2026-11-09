@@ -78,7 +78,7 @@ function renderTop(){
   $("#bell").setAttribute("aria-expanded", POP==="bell");
   $("#bellPop").innerHTML = POP==="bell" ? `<div class="pop pop-right pop-wide" role="dialog" aria-label="Уведомления">
       <div class="pop-title">Уведомления <span class="muted">${nf.length||""}</span></div>
-      ${nf.length ? nf.map(n=>`<button type="button" class="note ${n.lvl}" onclick="POP=null;go('${n.go}')"><span class="note-mark"></span><span class="note-text">${esc(n.text)} <span class="tzref">${n.tr}</span></span></button>`).join("")
+      ${nf.length ? nf.map(n=>`<button type="button" class="note ${n.lvl}" onclick="POP=null;go('${n.go}')"><span class="note-mark"></span><span class="note-text">${noteHtml(n)} <span class="tzref">${n.tr}</span></span></button>`).join("")
         : `<p class="muted" style="margin:6px 14px 14px">Новых уведомлений нет.</p>`}</div>` : "";
 }
 
@@ -143,10 +143,10 @@ document.addEventListener("keydown", e=>{ if((e.ctrlKey||e.metaKey) && (e.key===
 /* --- выбор кошельков: кнопка с выпадающим деревом --- */
 /* ДР-10: служебная группа «Без кошелька» в выборе кошельков — не кошелёк справочника */
 const NOWAL = "__nowallet";
-const wpName = id => id===NOWAL ? "Без кошелька" : nm(wal(id));
+const wpName = id => id===NOWAL ? tl("Без кошелька","No wallet") : nm(wal(id));
 function walletPicker(key, selected, onToggle, {label="Кошельки", all="Все доступные", onClear="", onAll="", noWallet=false}={}){
   const id = "v:"+key; const open = POP===id;
-  const txt = !selected.length ? all : selected.length===1 ? wpName(selected[0]) : `${wpName(selected[0])} и ещё ${selected.length-1}`;
+  const txt = !selected.length ? all : selected.length===1 ? wpName(selected[0]) : `${wpName(selected[0])} ${tl("и ещё","and")} ${selected.length-1}${tl(""," more")}`;
   return `<div class="fld popwrap"><span>${esc(label)}</span>
     <button type="button" class="picker ${selected.length?"set":""}" onclick="togglePop('${id}',event)" aria-expanded="${open}"><span>${esc(txt)}</span><span class="caret"></span></button>
     ${open?`<div class="pop pop-left">${walletChecklist(selected,onToggle)}${noWallet && seesNoWallet(me())?`<div class="msel" style="border-top:1px solid var(--line-soft);margin-top:4px;padding-top:4px"><label class="chk"><input type="checkbox" ${selected.includes(NOWAL)?"checked":""} onchange="${onToggle}('${NOWAL}',this.checked)"> <span title="Строки, не распределённые по кошелькам (ТР-23)"><i>Без кошелька</i> <span class="muted">· служебная группа</span></span></label></div>`:""}
@@ -427,3 +427,87 @@ function enableSort(root){
     applySort(t);
   });
 }
+
+/* ============================================================
+   ВЫБОР ДАТ НА ЯЗЫКЕ ИНТЕРФЕЙСА (ДР-01-30.10.2026)
+   Встроенный календарь браузера показывает подсказку и месяцы на языке браузера, а не приложения. Поэтому поля
+   <input type="date"> превращаются в текстовые с собственным календарём: подсказка, месяцы, дни недели и кнопки — RU или EN.
+   Значение поля (this.value в обработчиках) по-прежнему ISO «ГГГГ-ММ-ДД»; на экране — ДД.ММ.ГГГГ.
+   ============================================================ */
+const DP_TXT = {
+  ru:{ph:"дд.мм.гггг", months:["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"],
+      days:["Пн","Вт","Ср","Чт","Пт","Сб","Вс"], today:"Сегодня", clear:"Очистить", prev:"Предыдущий месяц", next:"Следующий месяц", bad:"Неверная дата — формат ДД.ММ.ГГГГ"},
+  en:{ph:"dd.mm.yyyy", months:["January","February","March","April","May","June","July","August","September","October","November","December"],
+      days:["Mo","Tu","We","Th","Fr","Sa","Su"], today:"Today", clear:"Clear", prev:"Previous month", next:"Next month", bad:"Invalid date — use DD.MM.YYYY"}};
+const dpT = () => DP_TXT[LANG==="en" ? "en" : "ru"];
+const DP_SET = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+function dpShow(el){ DP_SET.call(el, el._iso ? fmtD(el._iso) : ""); }
+function dpParse(s){
+  s = String(s||"").trim(); if(!s) return "";
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/), y, mo, d;
+  if(m){ y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else { m = s.match(/^(\d{1,2})[.\/\-\s](\d{1,2})[.\/\-\s](\d{2}|\d{4})$/) || s.match(/^(\d{2})(\d{2})(\d{4})$/); if(!m) return null; d = +m[1]; mo = +m[2]; y = +m[3]; if(y < 100) y += 2000; }
+  const dt = new Date(Date.UTC(y, mo-1, d)); if(dt.getUTCFullYear()!==y || dt.getUTCMonth()!==mo-1 || dt.getUTCDate()!==d) return null;
+  return dt.toISOString().slice(0,10);
+}
+function dpEnhance(el){
+  if(el._dp) return; el._dp = true;
+  const iso = el.getAttribute("value") || "";
+  el.type = "text"; el.classList.add("dp-input"); el.setAttribute("autocomplete","off"); el.setAttribute("inputmode","numeric");
+  el.placeholder = dpT().ph; el.setAttribute("aria-haspopup","dialog");
+  el._iso = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : "";
+  Object.defineProperty(el, "value", {configurable:true, get(){ return this._iso || ""; }, set(v){ this._iso = /^\d{4}-\d{2}-\d{2}$/.test(v||"") ? v : ""; dpShow(this); }});
+  dpShow(el);
+  el.addEventListener("focus", ()=>dpOpen(el));
+  el.addEventListener("click", ()=>dpOpen(el));
+  el.addEventListener("keydown", e=>{ if(e.key==="Escape") dpClose(); if(e.key==="Enter"){ e.preventDefault(); el.blur(); } });
+}
+/* ручной ввод: разбор до встроенных обработчиков onchange (захват на уровне документа) */
+document.addEventListener("change", e=>{
+  const el = e.target; if(!el || !el._dp || e._dpOwn) return;
+  const raw = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").get.call(el);
+  const iso = dpParse(raw);
+  if(iso===null || iso===el._iso){ e.stopImmediatePropagation(); dpShow(el); if(iso===null) toast(dpT().bad, {lvl:"warn"}); return; }
+  el._iso = iso; dpShow(el);
+}, true);
+function dpCommit(el, iso){
+  el._iso = iso; dpShow(el); dpClose();
+  const ev = new Event("change", {bubbles:true}); ev._dpOwn = true; el.dispatchEvent(ev);
+}
+let DP = null;
+function dpClose(){ if(DP){ DP.box.remove(); DP = null; } }
+function dpOpen(el){
+  if(DP && DP.el===el) return; dpClose();
+  const base = el._iso || CUR.date || todayISO();
+  DP = {el, y:+base.slice(0,4), m:+base.slice(5,7)-1, box:document.createElement("div")};
+  DP.box.className = "dp-pop notr"; DP.box.setAttribute("role","dialog");
+  DP.box.addEventListener("mousedown", e=>e.preventDefault());   // фокус остаётся в поле
+  document.body.appendChild(DP.box); dpDraw(); dpPlace();
+}
+function dpPlace(){ if(!DP) return; const r = DP.el.getBoundingClientRect(); const b = DP.box;
+  const top = r.bottom + 4 + 280 > window.innerHeight ? Math.max(4, r.top - 284) : r.bottom + 4;
+  b.style.top = top + "px"; b.style.left = Math.min(r.left, window.innerWidth - 268) + "px"; }
+function dpDraw(){
+  const T = dpT(); const {y, m, el} = DP;
+  const first = new Date(Date.UTC(y, m, 1)); const shift = (first.getUTCDay()+6)%7; const days = new Date(Date.UTC(y, m+1, 0)).getUTCDate();
+  const today = CUR.date || todayISO(); let cells = "";
+  for(let i=0;i<shift;i++) cells += `<span></span>`;
+  for(let d=1; d<=days; d++){ const iso = `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    cells += `<button type="button" class="${iso===el._iso?"on":""} ${iso===today?"today":""}" data-d="${iso}">${d}</button>`; }
+  DP.box.innerHTML = `<div class="dp-head"><button type="button" data-nav="-1" aria-label="${T.prev}">‹</button><b>${T.months[m]} ${y}</b><button type="button" data-nav="1" aria-label="${T.next}">›</button></div>
+    <div class="dp-grid dp-wd">${T.days.map(x=>`<span>${x}</span>`).join("")}</div><div class="dp-grid">${cells}</div>
+    <div class="dp-foot"><button type="button" data-act="today">${T.today}</button><button type="button" data-act="clear">${T.clear}</button></div>`;
+  DP.box.onclick = e=>{ const b = e.target.closest("button"); if(!b) return;
+    if(b.dataset.nav){ DP.m += +b.dataset.nav; if(DP.m<0){ DP.m=11; DP.y--; } if(DP.m>11){ DP.m=0; DP.y++; } dpDraw(); return; }
+    if(b.dataset.d) return dpCommit(DP.el, b.dataset.d);
+    if(b.dataset.act==="today") return dpCommit(DP.el, today);
+    if(b.dataset.act==="clear") return dpCommit(DP.el, ""); };
+}
+document.addEventListener("mousedown", e=>{ if(DP && e.target!==DP.el && !DP.box.contains(e.target)) dpClose(); }, true);
+document.addEventListener("focusin", e=>{ if(DP && e.target!==DP.el && !DP.box.contains(e.target)) dpClose(); });
+window.addEventListener("resize", ()=>dpPlace()); window.addEventListener("scroll", ()=>dpPlace(), true);
+function dpScan(root){ (root.querySelectorAll ? root : document).querySelectorAll('input[type="date"]').forEach(dpEnhance); if(root.matches && root.matches('input[type="date"]')) dpEnhance(root);
+  if(DP && !document.body.contains(DP.el)) dpClose(); }
+new MutationObserver(ms=>{ for(const m of ms) m.addedNodes.forEach(n=>{ if(n.nodeType===1) dpScan(n); }); if(DP && !document.body.contains(DP.el)) dpClose(); })
+  .observe(document.documentElement, {childList:true, subtree:true});
+document.addEventListener("DOMContentLoaded", ()=>dpScan(document));

@@ -629,6 +629,8 @@ def needs_formalizing(C):
             and d["from"]["wallet"] != d["to"]["wallet"] and d["id"] not in linked]
 
 
+KIND_EN = {"Документы 1С": "1C documents", "Справочники и курсы": "References and rates", "Остатки 1С": "1C balances", "Признаки документов ERP": "ERP document flags",
+           "Документы 1С (История согласования, 17 столбцов)": "1C documents (Approval history, 17 columns)"}
 # ---------------- актуальность курсов ERP (ДР-02-23.10) ----------------
 def need_rate_day(C, d):
     """Курс ERP какой даты нужен для отчёта на дату d: последний рабочий день не позже d (календарь Daily Balance)."""
@@ -680,27 +682,31 @@ def notifications(C, u, d=None):
             if not w or s >= -0.005:
                 continue
             if A or u["id"] in treasurers_of(C, w):
-                out.append({"lvl": "err", "text": f"Отрицательный остаток ({label}): {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}", "tr": "ТР-24", "go": "rep37"})
+                out.append({"lvl": "err", "text": f"Отрицательный остаток ({label}): {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}", "tr": "ТР-24", "go": "rep37",
+                            "en": f"Negative balance ({'Kf' if kind == 'kf' else 'Kp'}): {nm(C.get('wallets', w))} · {nm(C.acc(aid))} · {fmt(s)} {cur_code(C, cur)}"})
     af = acc_facts(C)
     for r in (recon(C) if C.S["settings"].get("recon1c") else []):
         if abs(r["diff"]) < 0.005:
             continue
         ws = {f["wallet"] for f in af.get(r["acc"], []) if f["wallet"]}
         if A or any(u["id"] in treasurers_of(C, w) for w in ws):
-            out.append({"lvl": "err", "text": f"Расхождение со сверкой 1С: {nm(C.acc(r['acc']))} на {fmt_d(r['date'])} — {'+' if r['diff'] > 0 else ''}{fmt(r['diff'])} {cur_code(C, r['cur'])}", "tr": "ТР-42", "go": "recon"})
+            out.append({"lvl": "err", "text": f"Расхождение со сверкой 1С: {nm(C.acc(r['acc']))} на {fmt_d(r['date'])} — {'+' if r['diff'] > 0 else ''}{fmt(r['diff'])} {cur_code(C, r['cur'])}", "tr": "ТР-42", "go": "recon",
+                        "en": f"Mismatch with 1C reconciliation: {nm(C.acc(r['acc']))} on {fmt_d(r['date'])} — {'+' if r['diff'] > 0 else ''}{fmt(r['diff'])} {cur_code(C, r['cur'])}"})
     for doc in needs_formalizing(C):
         if A or u["id"] in treasurers_of(C, doc["from"]["wallet"]) or u["id"] in treasurers_of(C, doc["to"]["wallet"]):
-            out.append({"lvl": "warn", "text": f"Требует оформления: {doc['no']} от {fmt_d(doc['date'])} — {nm(C.get('wallets', doc['from']['wallet']))} → {nm(C.get('wallets', doc['to']['wallet']))}", "tr": "ТР-57", "go": "formalize"})
+            out.append({"lvl": "warn", "text": f"Требует оформления: {doc['no']} от {fmt_d(doc['date'])} — {nm(C.get('wallets', doc['from']['wallet']))} → {nm(C.get('wallets', doc['to']['wallet']))}", "tr": "ТР-57", "go": "formalize",
+                        "en": f"Needs an internal operation: {doc['no']} of {fmt_d(doc['date'])} — {nm(C.get('wallets', doc['from']['wallet']))} → {nm(C.get('wallets', doc['to']['wallet']))}"})
     no_w = sum(1 for f in facts(C) if not f["wallet"] and f.get("doc"))
     if no_w and (A or has(u, "treasurer") or has(u, "finControl")):
-        out.append({"lvl": "warn", "text": f"Строк без кошелька: {no_w}", "tr": "ТР-23", "go": "nowallet"})
+        out.append({"lvl": "warn", "text": f"Строк без кошелька: {no_w}", "tr": "ТР-23", "go": "nowallet", "en": f"Lines without a wallet: {no_w}"})
     rv = [d for d in C.S["docs"] if needs_review(C, d) and can_review(C, u, d)]
     if rv:
-        out.append({"lvl": "warn", "text": f"Документы требуют проверки: {len(rv)}", "tr": "ТР-85, ТР-70", "go": "docs?review=1&state="})
+        out.append({"lvl": "warn", "text": f"Документы требуют проверки: {len(rv)}", "tr": "ТР-85, ТР-70", "go": "docs?review=1&state=", "en": f"Documents require review: {len(rv)}"})
     nd = [d for d in C.S["docs"] if d.get("source") == "file" and not d.get("excluded") and doc_eval(C, d)["missing"]
           and (A or can_review(C, u, d))]
     if nd:
-        out.append({"lvl": "warn", "text": f"Нет данных ERP по документам (признаки не получены): {len(nd)} — в расчёт не входят", "tr": "ДР-07", "go": "docs?review=&state="})
+        out.append({"lvl": "warn", "text": f"Нет данных ERP по документам (признаки не получены): {len(nd)} — в расчёт не входят", "tr": "ДР-07", "go": "docs?review=&state=",
+                    "en": f"No ERP data for documents (flags not received): {len(nd)} — not included in balances"})
     try:
         from .daily import db_notifications
         out += db_notifications(C, u, d)
@@ -709,14 +715,16 @@ def notifications(C, u, d=None):
         logging.getLogger("wallets").exception("Daily Balance notifications")
     unseen = [c for c in C.S["closedChanges"] if u["id"] not in (c.get("seen") or [])]
     if unseen and (A or has(u, "treasurer")):
-        out.append({"lvl": "warn", "text": f"Изменения 1С в закрытом периоде: {len(unseen)}", "tr": "ТР-56", "go": "closedch"})
+        out.append({"lvl": "warn", "text": f"Изменения 1С в закрытом периоде: {len(unseen)}", "tr": "ТР-56", "go": "closedch", "en": f"1C changes in a closed period: {len(unseen)}"})
     if A or has(u, "owner") or has(u, "fcHead"):
         rs = C.cache(("ratesSt", d), lambda: rates_status(C, d))
         stale = [x for x in rs["curs"] if x["st"] != "ok"]
         if stale:
             out.append({"lvl": "warn", "text": "Курсы ERP не актуальны — USD-показатели отчётов предварительные: " +
                         "; ".join(f"{x['code']} — {'нет курса' if not x['last'] else 'последний ' + fmt_d(x['last'])}" for x in stale) +
-                        f" (нужен на {fmt_d(rs['need'])})", "tr": "ДР-02-23.10", "go": "refs"})
+                        f" (нужен на {fmt_d(rs['need'])})", "tr": "ДР-02-23.10", "go": "refs",
+                        "en": "ERP rates are not current — report USD figures are preliminary: " +
+                        "; ".join(f"{x['code']} — {'no rate' if not x['last'] else 'latest ' + fmt_d(x['last'])}" for x in stale) + f" (needed for {fmt_d(rs['need'])})"})
     if A:
         kinds = {}
         for e in C.S["exchangeLog"]:
@@ -724,7 +732,7 @@ def notifications(C, u, d=None):
         for k, lst in kinds.items():
             l2 = lst[-2:]
             if len(l2) == 2 and all(e["errors"] > 0 for e in l2):
-                out.append({"lvl": "err", "text": f"Два неудачных обмена подряд: {k}", "tr": "ТР-18", "go": "xlog"})
+                out.append({"lvl": "err", "text": f"Два неудачных обмена подряд: {k}", "tr": "ТР-18", "go": "xlog", "en": f"Two failed exchanges in a row: {KIND_EN.get(k, k)}"})
     return out
 
 
@@ -761,6 +769,10 @@ def op_snap(C, o):
     L = op_legs(C, o)
     return {"дата": o["date"], "вид": OP_KINDS[o["kind"]]["name"], "сумма": " / ".join(f"{fmt_in(l['sum'])} {cur_code(C, l['cur'])}" for l in L),
             "кошелёк": f"{nm(C.get('wallets', o.get('from')))} → {nm(C.get('wallets', o.get('to')))}",
+            "счёт": " / ".join(nm(C.acc(l["acc"])) for l in L),
+            "договор": nm(C.get("contracts", o.get("contract"))) if o.get("contract") else "",
+            # ДР-02-30.10.2026: комментарий — в журнале аудита и истории с прежним и новым значением; пустой — пустая строка
+            "комментарий": o.get("comment") or "",
             "статус": "помечена на удаление" if o.get("deleted") else "проведена" if o.get("posted") else "черновик"}
 
 

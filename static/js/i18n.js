@@ -44,10 +44,25 @@ function trTok(v){
   if(v.startsWith("«")){ const inner = v.slice(1,-1); const t = I18N[inner]; return t!==undefined ? "“"+t+"”" : v; }
   return v.replace(/^ТР-/,"TR-").replace(/^МД-/,"MD-").replace(/ТР-/g,"TR-");
 }
+/* ДР-01-30.10.2026: сообщения сервера с переменной частью (списки листов, номеров) — по образцу */
+const REASON_EN = {"нет обязательных столбцов":"missing required columns","устаревшие столбцы, исключённые из формата":"obsolete columns removed from the format","лишние или переименованные столбцы":"extra or renamed columns","столбцы повторяются":"duplicated columns","столбцы без названия с данными":"unnamed columns with data","есть устаревшие столбцы":"obsolete columns present"};
+const TR_PATTERNS = [
+  [/^(нет обязательных столбцов|устаревшие столбцы, исключённые из формата|лишние или переименованные столбцы|столбцы повторяются|столбцы без названия с данными|есть устаревшие столбцы): (.+)$/s, (k,x)=>`${REASON_EN[k]}: ${x}`],
+  [/^(Списание безналичных ДС|Расходный кассовый ордер|Поступление на счёт|Поступление в кассу|Конвертация \/ переброска) № (.+)$/s, (t,no)=>`${({"Списание безналичных ДС":"Non-cash payment","Расходный кассовый ордер":"Cash payment order","Поступление на счёт":"Bank receipt","Поступление в кассу":"Cash receipt","Конвертация / переброска":"Conversion / transfer"})[t]} No. ${no}`],
+  [/^нарушен порядок столбцов: на месте (\d+) ожидается (.+), в файле — (.+)$/s, (n,a,b)=>`wrong column order: position ${n} should be ${a}, the file has ${b}`],
+  [/^не найдена строка заголовков с обязательным столбцом (.+)$/s, x=>`no header row with the required column ${x}`],
+  [/^Листы не распознаны и пропущены: (.+)\. Назовите лист по справочнику .+$/s, x=>`Sheets not recognized and skipped: ${x}. Name each sheet after a reference (Organizations, Accounts, Cash desks, Currencies, Rates, CF expense types, Departments, Zones).`],
+  [/^Курсы (\S+): нет курса за рабочие дни (.+?) — на эти даты USD-показатели будут предварительными; запросите курсы при следующем обмене \(ДР-02-23\.10\)$/s, (c,d)=>`Rates ${c}: no rate for working days ${d.replace(/ и ещё /," and more ")} — USD figures for these dates will be preliminary; request the rates in the next exchange (CR-02-23.10)`],
+  [/^Документов с этими GUID ещё нет: (\d+) — признаки сохранятся и применятся при загрузке отчёта .+$/s, n=>`No documents with these GUIDs yet: ${n} — the flags are saved and applied when the Approval history report is loaded`],
+  [/^Неподдерживаемый формат файла «История согласования»: (.+)$/s, x=>`Unsupported “Approval history” file format: ${x.replace(/нет обязательных столбцов/g,"missing required columns").replace(/устаревшие столбцы, исключённые из формата/g,"obsolete columns removed from the format").replace(/лишние или переименованные столбцы/g,"extra or renamed columns").replace(/столбцы повторяются/g,"duplicated columns").replace(/нарушен порядок столбцов/g,"wrong column order").replace(/ожидается/g,"expected").replace(/в файле/g,"in file").replace(/на месте/g,"at position")}`],
+];
 function tr(text){
   if(LANG==="ru" || !text || !/[А-Яа-яЁё]/.test(text)) return text;
   const lead = text.match(/^\s*/)[0], trail = text.match(/\s*$/)[0]; const core = text.trim();
   if(I18N[core]!==undefined) return lead + I18N[core] + trail;
+  for(const [re, fn] of TR_PATTERNS){ const m = core.match(re); if(m) return lead + fn(...m.slice(1)) + trail; }
+  // ссылки на пункты ТЗ (ТР-24, ДР-02-23.10, МД-11) — латиницей
+  if(/^(?:(?:ТР|ДР|МД)-[\d.…,\s-]+)+$/.test(core)) return lead + core.replace(/ТР-/g,"TR-").replace(/ДР-/g,"CR-").replace(/МД-/g,"MD-") + trail;
   for(const [ru,en] of SUFFIX) if(core.endsWith(ru)) return lead + core.slice(0,-ru.length) + en + trail;
   const {key, vals} = tokenize(core);
   let en = I18N[key];

@@ -404,14 +404,17 @@ def db_notifications(C, u, d=None):
     D = current_day(C)
     if is_workday(C, today_local(C)) and my_positions(C, u) and not reports_of(C, D, u["id"], "morning"):
         if is_late(C, D):
-            out.append({"lvl": "err", "text": f"Daily Balance за {fmt_d(D)} не сдан — просрочен (контрольное время {C.S['settings'].get('dbTime')} МСК)", "tr": "ТР-94", "go": "dbmy"})
+            out.append({"lvl": "err", "text": f"Daily Balance за {fmt_d(D)} не сдан — просрочен (контрольное время {C.S['settings'].get('dbTime')} МСК)", "tr": "ТР-94", "go": "dbmy",
+                        "en": f"Daily Balance for {fmt_d(D)} not submitted — overdue (deadline {C.S['settings'].get('dbTime')} Moscow time)"})
         else:
-            out.append({"lvl": "warn", "text": f"Сдайте Daily Balance за {fmt_d(D)} до {C.S['settings'].get('dbTime')} МСК", "tr": "ТР-94", "go": "dbmy"})
+            out.append({"lvl": "warn", "text": f"Сдайте Daily Balance за {fmt_d(D)} до {C.S['settings'].get('dbTime')} МСК", "tr": "ТР-94", "go": "dbmy",
+                        "en": f"Submit Daily Balance for {fmt_d(D)} by {C.S['settings'].get('dbTime')} Moscow time"})
     if has(u, "finControl") or is_admin(u):
         owners = {p.get("owner") for p in pos_list(C) if p.get("owner")}
         missing = [o for o in owners if not reports_of(C, D, o, "morning")]
         if missing and is_late(C, D) and is_workday(C, today_local(C)):
-            out.append({"lvl": "warn", "text": f"Daily Balance за {fmt_d(D)} не сдали: {', '.join(nm(C.get('users', o)) for o in missing)}", "tr": "ТР-94", "go": "dbmorning"})
+            out.append({"lvl": "warn", "text": f"Daily Balance за {fmt_d(D)} не сдали: {', '.join(nm(C.get('users', o)) for o in missing)}", "tr": "ТР-94", "go": "dbmorning",
+                        "en": f"Daily Balance for {fmt_d(D)} not submitted by: {', '.join(nm(C.get('users', o)) for o in missing)}"})
     # расхождения: казначеям кошельков на позиции, ответственному за позицию и фин. контролеру
     pf = pos_facts(C)
     for pos in pos_list(C):
@@ -425,7 +428,7 @@ def db_notifications(C, u, d=None):
         if pos.get("owner") == u["id"] or u["id"] in tres or has(u, "finControl"):
             a = C.acc(pos["acc"])
             out.append({"lvl": "err", "text": f"Daily Balance: расхождение {'+' if rr['diff'] > 0 else ''}{fmt(rr['diff'])} {cur_code(C, pos['cur'])} — {nm(a)} на {fmt_d(D)}",
-                        "tr": "ТР-100", "go": "dbrecon"})
+                        "tr": "ТР-100", "go": "dbrecon", "en": f"Daily Balance: mismatch {'+' if rr['diff'] > 0 else ''}{fmt(rr['diff'])} {cur_code(C, pos['cur'])} — {nm(a)} on {fmt_d(D)}"})
     C.st.cache[key] = out
     return out
 

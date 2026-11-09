@@ -592,12 +592,13 @@ function kfkp(list, date){ const kf = {}, kp = {}; list.forEach(f=>{ if(f.date<=
 /** Сумма по валютам → USD по курсу на дату (ТР-58) */
 function usdOf(byCur, date){ let s = 0, miss = [], prelim = [];
   for(const [c,v] of Object.entries(byCur)){ if(!v || Math.abs(v)<0.005) continue; const I = rateInfo(c,date); if(!I.rate){ miss.push(curCode(c)); continue; }
-    if(I.st==="prelim") prelim.push(`${curCode(c)} от ${fmtD(I.date)}`); s += v/I.rate; }
+    if(I.st==="prelim") prelim.push(`${curCode(c)} ${tl("от","of")} ${fmtD(I.date)}`); s += v/I.rate; }
   return {usd:r2(s), miss, prelim}; }
 /** USD-показатель с отметкой «Предварительный расчёт» (курс не на дату отчёта) или «нет курса» (ДР-02-23.10) */
 function usdMark(u){ const p = (u.prelim||[]).length, m = (u.miss||[]).length;
   if(!p && !m) return {cls:"", pre:"", title:""};
-  const t = [m?`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана, итог неполный`:"", p?`Предварительный расчёт: курс ${u.prelim.join(", ")}`:""].filter(Boolean).join("; ");
+  const t = [m?tl(`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана, итог неполный`, `no ERP rate: ${u.miss.join(", ")} — this part is not converted to USD, the total is incomplete`):"",
+    p?tl(`Предварительный расчёт: курс ${u.prelim.join(", ")}`, `Preliminary calculation: rate ${u.prelim.join(", ")}`):""].filter(Boolean).join("; ");
   return {cls:"prelim", pre:"≈ ", title:t}; }
 
 /* ============================================================
@@ -616,6 +617,10 @@ function needsFormalizing(){
   return DB.docs.filter(d => d.type==="ПЕР" && docCounts(d) && d.from.wallet && d.to.wallet && d.from.wallet!==d.to.wallet
     && !DB.ops.some(o=>o.linkedDoc===d.id && !o.deleted));
 }
+/** ДР-01-30.10.2026: строка на языке интерфейса для сообщений, собираемых из переменных частей (списки валют, дат, имён) */
+const tl = (ru, en) => LANG==="en" ? en : ru;
+/** ДР-01-30.10.2026: текст уведомления на языке интерфейса — сервер присылает русский и английский варианты */
+function noteHtml(n){ return LANG==="en" && n.en ? `<span class="notr">${esc(n.en)}</span>` : esc(n.text); }
 /** Уведомления считает сервер: для себя — DB.notifications, администратору — по каждому пользователю */
 function notifications(u){
   u = u || me();
@@ -644,7 +649,8 @@ function docSnap(d){
     статус: d.excluded ? "нет в загрузке" : STATE_NAMES[docState(d)].toLowerCase()};
 }
 function opSnap(o){ const L = opLegs(o); return {дата:o.date, вид:OP_KINDS[o.kind].name, сумма:L.map(l=>`${fmtIn(l.sum)} ${curCode(l.cur)}`).join(" / "),
-  кошелёк:`${nm(wal(o.from))} → ${nm(wal(o.to))}`, статус: o.deleted?"помечена на удаление":o.posted?"проведена":"черновик"}; }
+  кошелёк:`${nm(wal(o.from))} → ${nm(wal(o.to))}`, счёт:L.map(l=>nm(acc(l.acc))).join(" / "), договор:o.contract?nm(byId(DB.contracts,o.contract)):"", комментарий:o.comment||"",
+  статус: o.deleted?"помечена на удаление":o.posted?"проведена":"черновик"}; }
 function addVersion(obj, before, after, source){
   const d = diffText(before, after); if(!d) return false;
   (obj.versions = obj.versions||[]).push({t:new Date().toISOString(), u:nm(me()), source:source||"", before, after, diff:d});

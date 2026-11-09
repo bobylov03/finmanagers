@@ -835,3 +835,17 @@ table.kfkp td.usd{font-weight:600}
 td.prelim{color:var(--amber);font-style:italic}
 td.prelim.neg{color:var(--neg)}
 .rates-panel>summary{cursor:pointer;padding:10px 12px;list-style-position:inside}
+
+/* ДР-01-30.10.2026: календарь выбора даты на языке интерфейса */
+input.dp-input{min-width:120px;font-variant-numeric:tabular-nums}
+.dp-pop{position:fixed;z-index:1000;width:260px;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.16);padding:8px;font-size:13px}
+.dp-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.dp-head button{border:0;background:none;font-size:18px;width:30px;height:28px;cursor:pointer;border-radius:6px;color:var(--ink)}
+.dp-head button:hover,.dp-grid button:hover,.dp-foot button:hover{background:var(--accent-soft)}
+.dp-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center}
+.dp-wd span{font-size:11px;color:var(--ink-3);padding:2px 0}
+.dp-grid button{border:0;background:none;height:30px;border-radius:6px;cursor:pointer;color:var(--ink);font:inherit}
+.dp-grid button.today{outline:1px solid var(--line)}
+.dp-grid button.on{background:var(--accent);color:#fff}
+.dp-foot{display:flex;justify-content:space-between;margin-top:6px;border-top:1px solid var(--line-soft);padding-top:6px}
+.dp-foot button{border:0;background:none;color:var(--link);cursor:pointer;padding:4px 8px;border-radius:6px;font:inherit}

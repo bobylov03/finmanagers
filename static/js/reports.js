@@ -26,8 +26,9 @@ function ratesPanel(curs, date){
     <p class="muted" style="padding:8px 12px;margin:0">Остатки в USD не пересчитываются; остатки в других валютах пересчитываются по курсу ERP на дату отчёта (для выходных — на последний рабочий день по календарю Daily Balance). Если курса на эту дату нет, USD-показатели считаются по последнему доступному курсу и помечены «≈» — предварительный расчёт; после загрузки курсов отчёт пересчитается сам. Курс платёжного документа для остатков не используется.</p></div></details>`;
 }
 function prelimBanner(u){ const m = usdMark(u); if(!m.cls) return "";
-  const parts = [(u.prelim||[]).length?`курсы ERP на дату отчёта не получены — USD посчитан по последним доступным: ${u.prelim.join(", ")}`:"", (u.miss||[]).length?`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана`:""].filter(Boolean);
-  return `<div class="alert warn"><b>${(u.miss||[]).length?"Неполный итог в USD":"Предварительный расчёт в USD"}</b> (помечено «≈»): ${esc(parts.join("; "))}. Загрузите курсы ERP («Загрузка файлов» → «Справочники и курсы») — отчёт пересчитается сам.</div>`; }
+  const parts = [(u.prelim||[]).length?tl(`курсы ERP на дату отчёта не получены — USD посчитан по последним доступным: ${u.prelim.join(", ")}`, `ERP rates for the report date were not received — USD is calculated with the latest available: ${u.prelim.join(", ")}`):"",
+    (u.miss||[]).length?tl(`нет курса ERP: ${u.miss.join(", ")} — эта часть в USD не посчитана`, `no ERP rate: ${u.miss.join(", ")} — this part is not converted to USD`):""].filter(Boolean);
+  return `<div class="alert warn notr"><b>${(u.miss||[]).length?tl("Неполный итог в USD","Incomplete total in USD"):tl("Предварительный расчёт в USD","Preliminary calculation in USD")}</b> ${tl("(помечено «≈»)","(marked “≈”)")}: ${esc(parts.join("; "))}. ${tl("Загрузите курсы ERP («Загрузка файлов» → «Справочники и курсы») — отчёт пересчитается сам.","Upload ERP rates (“File upload” → “References and rates”) — the report recalculates itself.")}</div>`; }
 /** Дерево видимых кошельков: родитель — ближайший видимый предок */
 function visibleTree(){
   const V = visibleWallets();
@@ -102,7 +103,7 @@ function viewRep37(){
   const curCells = a => curs.map(c=>cell(a.kf[c],"kf")+cell(a.kp[c],"kp")).join("");
   const partRows = (a, pred, lvl) => a.parts.filter(p=>F.zero || Math.abs(p.kf)>=0.005 || Math.abs(p.kp)>=0.005).sort((x,y)=>(nm(org(x.org))+nm(acc(x.acc))+curCode(x.cur)).localeCompare(nm(org(y.org))+nm(acc(y.acc))+curCode(y.cur),"ru")).map(p=>{
     const RI = rateInfo(p.cur,date); const k = RI.rate; const uf = k ? r2(p.kf/k) : NaN, up = k ? r2(p.kp/k) : NaN;
-    const pu = {miss: k?[]:[curCode(p.cur)], prelim: RI.st==="prelim"?[`${curCode(p.cur)} от ${fmtD(RI.date)}`]:[]};
+    const pu = {miss: k?[]:[curCode(p.cur)], prelim: RI.st==="prelim"?[`${curCode(p.cur)} ${tl("от","of")} ${fmtD(RI.date)}`]:[]};
     const label = [F.byOrg?nm(org(p.org)):"", F.byAcc?posLabel(p.acc,p.cur):""].filter(Boolean).join(" · ");
     const isBad = F.byAcc && bad.has(p.acc);
     const pr = f=>pred(f) && (!F.byOrg||f.org===p.org) && (!F.byAcc||f.acc===p.acc) && f.cur===p.cur;
@@ -167,8 +168,8 @@ function viewRep75(){
     const rs = rows.filter(r=>r.org===o).sort((a,b)=>nm(acc(a.acc)).localeCompare(nm(acc(b.acc)),"ru"));
     let sF = 0, sP = 0; const closed = R75C.has(o); const preO = new Set(); const missO = new Set();
     const html = rs.map(r=>{ const RI = rateInfo(r.cur,date); const k = RI.rate; const uf = k?r2(r.kf/k):NaN, up = k?r2(r.kp/k):NaN;
-      if(k){ sF += r.kf/k; sP += r.kp/k; if(RI.st==="prelim"){ const t = `${curCode(r.cur)} от ${fmtD(RI.date)}`; preO.add(t); pre75.add(t); } } else { missing.add(curCode(r.cur)); missO.add(curCode(r.cur)); }
-      const ru = {miss:[], prelim: RI.st==="prelim" ? [`${curCode(r.cur)} от ${fmtD(RI.date)}`] : []};
+      if(k){ sF += r.kf/k; sP += r.kp/k; if(RI.st==="prelim"){ const t = `${curCode(r.cur)} ${tl("от","of")} ${fmtD(RI.date)}`; preO.add(t); pre75.add(t); } } else { missing.add(curCode(r.cur)); missO.add(curCode(r.cur)); }
+      const ru = {miss:[], prelim: RI.st==="prelim" ? [`${curCode(r.cur)} ${tl("от","of")} ${fmtD(RI.date)}`] : []};
       if(closed) return "";
       const a = acc(r.acc);
       return `<tr class="${bad.has(r.acc)?"bad":""}"><td style="padding-left:40px">${drillLink(()=>showFacts(nm(a), f=>inSel(f)&&f.acc===r.acc&&f.cur===r.cur&&(f.date<=date||(f.kp||f.date)<=date)), esc(nm(a)))}
@@ -460,7 +461,7 @@ function viewDash(){
     <div class="hero-main">
       <span class="hero-label">Фактический остаток (Кф) доступных кошельков на ${fmtD(CUR.date)}</span>
       <b class="hero-sum ${tot.usd<0?"neg":""}" ${usdMark(tot).title?`title="${esc(usdMark(tot).title)}"`:""}>${usdMark(tot).pre}${fmt(tot.usd)}<small>USD</small></b>
-      ${usdMark(tot).cls?`<span class="hero-label amber">≈ ${esc(usdMark(tot).title)}</span>`:""}
+      ${usdMark(tot).cls?`<span class="hero-label amber notr">≈ ${esc(usdMark(tot).title)}</span>`:""}
       <span class="hero-label" title="Кп = Кф − исходящие в пути, подтверждённые казначеем">Плановый (Кп): <b>${fmt(usdOf(bp,CUR.date).usd)} USD</b></span>
       <div class="hero-links"><a class="lnk" onclick="go('rep37')">Открыть по кошелькам</a><a class="lnk" onclick="go('rep75')">Расположение ДС</a></div>
     </div>
@@ -470,7 +471,7 @@ function viewDash(){
   ${tot.miss.length?`<div class="alert warn">Нет курса на ${fmtD(CUR.date)} для: ${esc(tot.miss.join(", "))} — эти суммы не вошли в USD.</div>`:""}
   <div class="dash-grid">
     <div class="panel"><header><h2>Требует внимания</h2>${nf.length?`<span class="count">${nf.length}</span>`:""}</header>
-      <div class="body flush">${nf.length ? `<ul class="todo">${nf.map(n=>`<li class="${n.lvl}"><span class="todo-mark"></span><span class="todo-text">${esc(n.text)} <span class="tzref">${n.tr}</span></span><button type="button" class="btn sm" onclick="go('${n.go}')">Перейти</button></li>`).join("")}</ul>`
+      <div class="body flush">${nf.length ? `<ul class="todo">${nf.map(n=>`<li class="${n.lvl}"><span class="todo-mark"></span><span class="todo-text">${noteHtml(n)} <span class="tzref">${n.tr}</span></span><button type="button" class="btn sm" onclick="go('${n.go}')">Перейти</button></li>`).join("")}</ul>`
         : `<p class="empty">Всё в порядке: расхождений и неразнесённых строк нет.</p>`}</div></div>
     <div class="panel"><header><h2>Кошельки</h2><span class="hint">USD на ${fmtD(CUR.date)}</span><div style="flex:1"></div><a class="lnk" onclick="go('rep37')">Все</a></header>
       <div class="body flush"><ul class="wlist">${wl.map(x=>`<li onclick="RF.rep75.wallets=['${x.w.id}'];go('rep75')" title="Расположение ДС этого кошелька">
