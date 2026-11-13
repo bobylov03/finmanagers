@@ -849,3 +849,6 @@ input.dp-input{min-width:120px;font-variant-numeric:tabular-nums}
 .dp-grid button.on{background:var(--accent);color:#fff}
 .dp-foot{display:flex;justify-content:space-between;margin-top:6px;border-top:1px solid var(--line-soft);padding-top:6px}
 .dp-foot button{border:0;background:none;color:var(--link);cursor:pointer;padding:4px 8px;border-radius:6px;font:inherit}
+
+/* ДР-01-10.11.2026: «было/стало» в журнале аудита и версиях — полный текст, каждое поле с новой строки */
+.aud-det{font-size:11px;max-width:560px;white-space:pre-line;word-break:break-word}

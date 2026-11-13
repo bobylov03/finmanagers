@@ -14,7 +14,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory
 from . import actions as A
 from . import daily as DB_
 from . import importer as I
-from .logic import (Ctx, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
+from .logic import (Ctx, Masker, ROLES, can_edit_wallet, can_enter, can_review, facts, has, hidden_allowed, is_admin, line_visible, notifications,
                     own_wallets, recon, reconciled_days, doc_eval, dup_state, rates_status, sees_no_wallet, sent_confirmations, line_visible_l, visible_wallets, auto_close_period)
 from .mailer import mail_configured, send_notifications
 from .store import Store
@@ -203,12 +203,13 @@ def create_app(db_path=None, start_scheduler=True):
             docs = [dict(d, lines=[dict(l, idx=i) for i, l in enumerate(d["lines"])], hiddenLines=0) for d in S["docs"]]
             ops, opening, contracts = S["ops"], S["opening"], S["contracts"]
         else:
+            M = Masker(c, u)   # ДР-02-10.11.2026: сведения о недоступных скрытых кошельках обезличиваются в ответе
             docs = []
             for d in S["docs"]:
                 if d["type"] == "ПЕР":
                     ws = [d["from"].get("wallet"), d["to"].get("wallet")]
                     if any((w in V) if w else nw for w in ws):
-                        docs.append(dict(d, hiddenLines=0)); refd.update(w for w in ws if w)
+                        docs.append(M.per_doc(dict(d, hiddenLines=0))); refd.update(w for w in ws if w)
                     continue
                 vis = [dict(l, idx=i) for i, l in enumerate(d["lines"]) if line_visible_l(c, u, l)]
                 held = d.get("held")
@@ -216,17 +217,17 @@ def create_app(db_path=None, start_scheduler=True):
                 if not vis and not hvis:
                     continue
                 hidden = len(d["lines"]) - len(vis)
-                x = dict(d, lines=vis, hiddenLines=hidden, versions=d["versions"] if not hidden else [], fileSig="")
+                x = dict(d, lines=vis, hiddenLines=hidden, versions=M.versions(d["versions"], ()) if not hidden else [], fileSig="")
                 if held:   # удержанное до проверки движение — тоже только видимые строки (раздел 9)
                     x["held"] = dict(held, lines=hvis)
                     if hidden and x.get("review"):
                         x["review"] = dict(x["review"], diff=[q for q in x["review"].get("diff") or [] if not q.get("line")])
                 docs.append(x)
-            ops = [o for o in S["ops"] if o.get("from") in V or o.get("to") in V]
+            ops = [M.op(o) for o in S["ops"] if o.get("from") in V or o.get("to") in V]
             for o in ops:
                 refd.update(x for x in (o.get("from"), o.get("to")) if x)
             opening = [x for x in S["opening"] if x.get("wallet") in V]
-            contracts = [x for x in S["contracts"] if x["lender"] in V or x["borrower"] in V]
+            contracts = [M.contract(x) for x in S["contracts"] if x["lender"] in V or x["borrower"] in V]
             for x in contracts:
                 refd.update((x["lender"], x["borrower"]))
         confs = sent_confirmations(c)   # Писх: подтверждённые казначеем исходящие в пути

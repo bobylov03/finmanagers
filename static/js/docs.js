@@ -213,7 +213,7 @@ function lockReason(){
 function versionsBlock(obj){
   const v = obj.versions||[]; if(!v.length) return "";
   return `<fieldset><legend>Версии документа (ТР-14)</legend><table><thead><tr><th>Когда</th><th>Кто / источник</th><th>Изменения (было → стало)</th></tr></thead>
-    <tbody>${v.slice().reverse().map(x=>`<tr><td>${fmtDT(x.t)}</td><td>${esc(x.u)}${x.source?`<br><span class="muted">${esc(x.source)}</span>`:""}</td><td style="font-size:11px" class="notr">${esc(x.diff)}</td></tr>`).join("")}</tbody></table></fieldset>`;
+    <tbody>${v.slice().reverse().map(x=>`<tr><td>${fmtDT(x.t)}</td><td>${esc(x.u)}${x.source?`<br><span class="muted">${esc(x.source)}</span>`:""}</td><td class="notr aud-det">${esc(x.diff)}</td></tr>`).join("")}</tbody></table></fieldset>`;
 }
 
 /* --- документ из файла 1С: только назначение кошелька --- */
@@ -509,7 +509,7 @@ function transferBody(){
         <label class="fld"><span>Зона ответственности</span><select ${dis} onchange="trSet('${s}','zone',this.value)">${opts(activeOn(DB.zones,d.date,S.zone),S.zone,{empty:"—"})}</select></label>
         <label class="fld"><span>Контрагент</span><input type="text" ${dis} value="${esc(S.cpty||"")}" onchange="trSet('${s}','cpty',this.value)"></label>
         <label class="fld"><span>Договор</span><input type="text" ${dis} value="${esc(S.contract||"")}" onchange="ED['${s}'].contract=this.value"></label>
-        <label class="fld"><span>Назначение платежа</span><input type="text" ${dis} value="${esc(S.purpose||"")}" onchange="ED['${s}'].purpose=this.value"></label>
+        <label class="fld"><span>Назначение платежа</span><input type="text" ${S.textMasked?"disabled":dis} value="${esc(S.textMasked&&S.purpose?tl("Текст скрыт из-за ограничений доступа","Text hidden due to access restrictions"):(S.purpose||""))}" onchange="ED['${s}'].purpose=this.value">${S.textMasked?`<small>Сторона относится к кошельку, к которому у вас нет доступа (ТР-35)</small>`:""}</label>
       </div>
     </div></fieldset>`; };
   const diffW = d.from.wallet && d.to.wallet && d.from.wallet!==d.to.wallet;
@@ -809,7 +809,7 @@ function opBody(){
     ${loan?`<label class="fld ${fi("contract",o)}"><span>Договор займа <em>*</em></span><div class="row"><select style="flex:1" ${dis} onchange="oeSet('contract',this.value)">${opts(DB.contracts.filter(c=>o.kind==="loan"?(c.lender===o.from&&c.borrower===o.to):(c.lender===o.to&&c.borrower===o.from)),o.contract,{empty:"— выберите —"})}</select>
       ${ed?`<button class="btn sm" onclick="openContract(null,true)">Новый</button>`:""}</div>${fe("contract",o)||`<small>Долг ведётся в USD по договору (ТР-28, ТР-40)</small>`}</label>`:""}
     ${o.kind==="exchange"?`<label class="fld"><span>Вид обмена</span><select ${dis} onchange="OE.sameCur=this.value==='1';if(OE.sameCur){if(OE.leg2.cur&&OE.leg2.cur!==OE.leg1.cur){OE.leg2.acc='';OE.leg2.cur='';}syncSameCur();}else{if(OE.leg2.cur&&OE.leg2.cur===OE.leg1.cur){OE.leg2.acc='';OE.leg2.cur='';}OE.leg2.sum=null;OE._xt=['s1','x'];xDefault(true);}refreshModal()"><option value="1" ${o.sameCur?"selected":""}>Обмен в одной валюте</option><option value="0" ${!o.sameCur?"selected":""}>Обмен в разной валюте</option></select></label>`:""}
-    <label class="fld" style="grid-column:1/-1"><span>Комментарий</span><input type="text" ${dis} value="${esc(o.comment)}" onchange="OE.comment=this.value"></label>
+    <label class="fld" style="grid-column:1/-1"><span>Комментарий</span><input type="text" ${o.commentMasked?"disabled":dis} value="${esc(o.commentMasked?tl("Комментарий скрыт из-за ограничений доступа","Comment hidden due to access restrictions"):o.comment)}" onchange="OE.comment=this.value">${o.commentMasked?`<small>В операции участвует кошелёк, к которому у вас нет доступа (ТР-35)</small>`:""}</label>
   </div>
   <p class="muted">Поля «Подразделение» нет: достаточно кошелька-отправителя и кошелька-получателя (ТР-26, МД-16).</p>
   ${o.kind==="exchange" ? `

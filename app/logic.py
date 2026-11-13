@@ -177,6 +177,77 @@ def hidden_allowed(C, u, w):
     return all((not a.get("hidden")) or u["id"] in (a.get("access") or []) for a in ancestors(C, w["id"]))
 
 
+# ---------------- ДР-02-10.11.2026: скрытые кошельки в комментариях и истории ----------------
+COMMENT_MASK = "Комментарий скрыт из-за ограничений доступа"
+TEXT_MASK = "Текст скрыт из-за ограничений доступа"
+HIDDEN_NAME = "скрытый кошелёк"
+
+
+def denied_wallet(C, u, wid):
+    """Кошелёк скрыт (сам или через предка), и пользователь не в списке доступа (ТР-35). Администратор видит всё."""
+    if not wid or is_admin(u):
+        return False
+    w = C.get("wallets", wid)
+    return bool(w) and not hidden_allowed(C, u, w)
+
+
+class Masker:
+    """Обезличивает сведения о недоступных скрытых кошельках в данных для конкретного пользователя.
+    Исходные данные в базе не меняются — маскируется только ответ сервера."""
+
+    def __init__(self, C, u):
+        self.C, self.u = C, u
+        names = {nm(w) for w in C.S["wallets"] if denied_wallet(C, u, w["id"]) and nm(w)}
+        self.names = sorted(names, key=len, reverse=True)
+
+    def text(self, s):
+        if not isinstance(s, str) or not s:
+            return s
+        for n in self.names:
+            s = s.replace(n, HIDDEN_NAME)
+        return s
+
+    def snap(self, x, text_keys):
+        if not isinstance(x, dict):
+            return x
+        y = {}
+        for k, v in x.items():
+            if any(k == tk or k.startswith(tk + " ") for tk in text_keys):
+                y[k] = (COMMENT_MASK if k == "комментарий" else TEXT_MASK) if v else v
+            else:
+                y[k] = self.text(v)
+        return y
+
+    def versions(self, vs, text_keys):
+        out = []
+        for v in vs or []:
+            b, a = self.snap(v.get("before"), text_keys), self.snap(v.get("after"), text_keys)
+            out.append(dict(v, before=b, after=a, diff=diff_text(b, a) if isinstance(b, dict) and isinstance(a, dict) else self.text(v.get("diff"))))
+        return out
+
+    def op(self, o):
+        if not any(denied_wallet(self.C, self.u, o.get(k)) for k in ("from", "to")):
+            return o
+        return dict(o, comment=COMMENT_MASK if o.get("comment") else "", commentMasked=bool(o.get("comment")),
+                    versions=self.versions(o.get("versions"), ("комментарий",)))
+
+    def per_doc(self, d):
+        sides = [s for s in ("from", "to") if denied_wallet(self.C, self.u, (d.get(s) or {}).get("wallet"))]
+        if not sides:
+            return d
+        x = dict(d)
+        for s in sides:
+            x[s] = dict(d[s], purpose=TEXT_MASK if d[s].get("purpose") else "", textMasked=True)
+        keys = tuple(f"Назначение платежа ({'Отправитель' if s == 'from' else 'Получатель'})" for s in sides)
+        x["versions"] = self.versions(d.get("versions"), keys)
+        return x
+
+    def contract(self, c):
+        if not any(denied_wallet(self.C, self.u, c.get(k)) for k in ("lender", "borrower")):
+            return c
+        return dict(c, name=self.text(c.get("name")))
+
+
 def visible_wallets(C, u):
     def build():
         if is_admin(u):
@@ -737,15 +808,30 @@ def notifications(C, u, d=None):
 
 
 # ---------------- версии и аудит ----------------
+EMPTY_TXT = "пусто"
+
+
+def _dv(v):
+    """Значение для «было/стало»: пустое — «пусто» (ДР-01-10.11.2026), текст — целиком, без экранирования."""
+    if v is None or v == "":
+        return EMPTY_TXT
+    if isinstance(v, str):
+        return f"«{v}»"
+    return json.dumps(v, ensure_ascii=False)
+
+
 def diff_text(before, after):
+    """Изменённые поля «поле: было … → стало …». Пустое значение и отсутствующее поле равнозначны («пусто»):
+    ложного изменения не возникает, а очистка и заполнение поля видны явно."""
     keys = list(dict.fromkeys(list((before or {}).keys()) + list((after or {}).keys())))
     out = []
     for k in keys:
-        a = json.dumps((before or {}).get(k), ensure_ascii=False)
-        b = json.dumps((after or {}).get(k), ensure_ascii=False)
-        if a != b:
-            out.append(f"{k}: {a} → {b}")
-    return "; ".join(out)
+        a, b = (before or {}).get(k), (after or {}).get(k)
+        a = "" if a is None else a
+        b = "" if b is None else b
+        if json.dumps(a, ensure_ascii=False) != json.dumps(b, ensure_ascii=False):
+            out.append(f"{k}: было {_dv(a)} → стало {_dv(b)}")
+    return ";\n".join(out)
 
 
 def fmt_in(n):
@@ -755,14 +841,55 @@ def fmt_in(n):
 def doc_snap(C, d):
     wn = lambda w: nm(C.get("wallets", w)) if w else "без кошелька"
     if d["type"] == "ПЕР":
-        return {"дата": d["date"], "сумма": f"{fmt_in(d['from'].get('sum'))} → {fmt_in(d['to'].get('sum'))}",
-                "кошелёк": f"{wn(d['from'].get('wallet'))} → {wn(d['to'].get('wallet'))}", "статус": "помечен" if d.get("deleted") else d["status"]}
+        r = {"дата": d["date"], "сумма": f"{fmt_in(d['from'].get('sum'))} → {fmt_in(d['to'].get('sum'))}",
+             "кошелёк": f"{wn(d['from'].get('wallet'))} → {wn(d['to'].get('wallet'))}", "статус": "помечен" if d.get("deleted") else d["status"]}
+        if d.get("source") == "manual":
+            r.update(_manual_head(C, d))
+            for side, title in (("from", "Отправитель"), ("to", "Получатель")):
+                r.update(_manual_fields(C, d.get(side) or {}, f"({title})", PER_TEXT_LABELS, side=True))
+        return r
     ev = doc_eval(C, d)
     st = "нет в загрузке" if d.get("excluded") else STATE_NAMES[ev["st"]].lower()
     if d["type"] == "СБДС" and d.get("source") == "file":
         st += f"; согласован: {tri_text(ev['flags']['approved']).lower()}; проведено банком: {tri_text(ev['flags']['bank']).lower()}"
-    return {"дата": d["date"], "сумма": fmt_in(r2(sum(l.get("sum") or 0 for l in d["lines"]))),
-            "кошелёк": ", ".join(dict.fromkeys(wn(p["wallet"]) + (f" {fmt(p['sum'])}" if l.get("split") else "") for l in d["lines"] for p in line_parts(l))), "статус": st}
+    r = {"дата": d["date"], "сумма": fmt_in(r2(sum(l.get("sum") or 0 for l in d["lines"]))),
+         "кошелёк": ", ".join(dict.fromkeys(wn(p["wallet"]) + (f" {fmt(p['sum'])}" if l.get("split") else "") for l in d["lines"] for p in line_parts(l))), "статус": st}
+    if d.get("source") == "manual":
+        # ДР-01-10.11.2026: все редактируемые реквизиты ручного документа, текстовые — с привязкой к строке расшифровки
+        r.update(_manual_head(C, d))
+        r["Организация"] = nm(C.get("orgs", d.get("org"))) if d.get("org") else ""
+        r["Касса" if DOC_TYPES.get(d["type"], {}).get("cash") else "Банковский счёт"] = nm(C.acc(d.get("acc"))) if d.get("acc") else ""
+        r["Валюта"] = cur_code(C, d["cur"]) if d.get("cur") else ""
+        for i, l in enumerate(d["lines"]):
+            r.update(_manual_fields(C, l, f"(строка {i + 1})", LINE_TEXT_LABELS, multi=len(d["lines"]) > 1))
+    return r
+
+
+# подписи полей — как в формах ручных документов
+LINE_TEXT_LABELS = (("dept", "Подразделение"), ("cf", "Тип расхода CF"), ("zone", "Зона"), ("cpty", "Контрагент"), ("contract", "Договор"), ("purpose", "Назначение"))
+PER_TEXT_LABELS = (("dept", "Подразделение"), ("cf", "Тип расхода CF"), ("zone", "Зона ответственности"), ("cpty", "Контрагент"), ("contract", "Договор"), ("purpose", "Назначение платежа"))
+_REF_COLL = {"dept": "depts", "cf": "cfTypes", "zone": "zones"}
+
+
+def _manual_head(C, d):
+    return {"Хозяйственная операция": d.get("op") or "", "Номер документа 1С": d.get("no1c") or "", "Дата документа 1С": d.get("date1c") or ""}
+
+
+def _manual_fields(C, x, suffix, labels, side=False, multi=False):
+    r = {}
+    if side:
+        r[f"Организация {suffix}"] = nm(C.get("orgs", x.get("org"))) if x.get("org") else ""
+        r[f"Счёт или касса {suffix}"] = nm(C.acc(x.get("acc"))) if x.get("acc") else ""
+        r[f"Валюта {suffix}"] = cur_code(C, x["cur"]) if x.get("cur") else ""
+    elif multi:
+        r[f"Сумма {suffix}"] = fmt_in(x.get("sum"))
+        r[f"Кошелёк {suffix}"] = nm(C.get("wallets", x.get("wallet"))) if x.get("wallet") else ""
+    for k, title in labels:
+        v = x.get(k) or ""
+        if k in _REF_COLL and v:
+            v = nm(C.get(_REF_COLL[k], v)) or v
+        r[f"{title} {suffix}"] = v
+    return r
 
 
 def op_snap(C, o):

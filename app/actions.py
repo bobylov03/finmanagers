@@ -8,7 +8,7 @@ import math
 import re
 import secrets
 
-from .logic import (DOC_TYPES, MANUAL_OPS, OP_KINDS, ROLES, RULE_FIELDS, RULE_OPS, acc_curs, add_version, apply_rules, balances, can_edit_wallet, can_review,
+from .logic import (COMMENT_MASK, TEXT_MASK, denied_wallet, DOC_TYPES, MANUAL_OPS, OP_KINDS, ROLES, RULE_FIELDS, RULE_OPS, acc_curs, add_version, apply_rules, balances, can_edit_wallet, can_review,
                     movement_snap, doc_counts,
                     can_enter, cur_code, descendants, doc_snap, facts, has, in_closed, is_active_at, is_admin, line_visible, manual_allowed,
                     match_rule, needs_formalizing, nm, op_complete, op_legs, op_snap, own_wallets, period_error, rate_at, to_usd, wallet_closed_at,
@@ -207,6 +207,11 @@ def validate_manual(C, u, d):
     return e
 
 
+def doc_obj(d):
+    """Объект записи аудита ручного документа: тип, номер и дата документа (ДР-01-10.11.2026)."""
+    return f"{d['type']} {d['no']} от {fmt_d(d['date'])}" if d.get("date") else f"{d['type']} {d['no']}"
+
+
 def save_manual_doc(C, u, p):
     if not can_enter(u):
         raise Forbidden()
@@ -230,6 +235,11 @@ def save_manual_doc(C, u, p):
     if typ == "ПЕР":
         d["from"] = _clean_side(C, src.get("from") or {}, errors, "Отправитель")
         d["to"] = _clean_side(C, src.get("to") or {}, errors, "Получатель")
+        if orig:   # ДР-02-10.11.2026: тексты недоступной скрытой стороны пришли замаскированными — сохраняются исходные
+            for side in ("from", "to"):
+                if denied_wallet(C, u, (orig.get(side) or {}).get("wallet")):
+                    if d[side].get("purpose") == TEXT_MASK or (orig.get(side) or {}).get("purpose") and not d[side].get("purpose"):
+                        d[side]["purpose"] = orig[side].get("purpose") or ""
         if d["op"] == "Конвертация валюты" and d["from"]["org"]:
             d["to"]["org"] = d["from"]["org"]        # ТР-111: получатель подставляется
         d["org"], d["acc"], d["cur"] = d["from"]["org"], d["from"]["acc"], d["from"].get("cur") or ""
@@ -268,15 +278,17 @@ def save_manual_doc(C, u, p):
     if not orig:
         d["no"] = C.st.next_no({"ПБДС": "ПБ", "ПКО": "ПК", "ПЕР": "ПР"}[typ])
         C.st.add("docs", d)
-        C.st.audit(u, "Создание ручного документа", f"{typ} {d['no']}", diff_text({}, doc_snap(C, d)))
+        C.st.audit(u, "Создание ручного документа", doc_obj(d), diff_text({}, doc_snap(C, d)))
     else:
         before, after = doc_snap(C, orig), doc_snap(C, d)
         idx = C.S["docs"].index(orig)
         C.S["docs"][idx] = d
         C.st._idx.pop("docs", None)
         C.st.save("docs", d)
-        add_version(C, "doc", d, before, after, "ручная правка", u)
-        C.st.audit(u, "Изменение ручного документа", f"{typ} {d['no']}", diff_text(before, after) or "без изменений ключевых полей")
+        # ДР-01-10.11.2026: одно сохранение — одна запись аудита и одна версия со всеми изменёнными полями (было/стало);
+        # сохранение без фактических изменений не порождает ложного события
+        if add_version(C, "doc", d, before, after, "ручная правка", u):
+            C.st.audit(u, "Изменение ручного документа", doc_obj(d), diff_text(before, after))
     if link_op:
         link_op["no"] = C.st.next_no("ВО")
         link_op["comment"] = f"Оформляет {d['op'].lower()} {d['no']}"
@@ -297,7 +309,7 @@ def toggle_doc_delete(C, u, doc_id):
     d["deleted"] = not d.get("deleted")
     C.st.save("docs", d)
     add_version(C, "doc", d, before, doc_snap(C, d), "пометка на удаление" if d["deleted"] else "снятие пометки", u)
-    C.st.audit(u, "Пометка на удаление" if d["deleted"] else "Снятие пометки удаления", f"{d['type']} {d['no']}", "")
+    C.st.audit(u, "Пометка на удаление" if d["deleted"] else "Снятие пометки удаления", doc_obj(d) if d["source"] == "manual" else f"{d['type']} {d['no']}", "")
 
 
 def assign_wallets(C, u, doc_id, changes):
@@ -523,6 +535,8 @@ def save_op(C, u, p):
             else:
                 o["xrate"] = round(s1 / s2 if xdir == "12" else s2 / s1, 6)
             o["leg2"]["xrate"], o["leg2"]["xdir"] = o["xrate"], xdir
+    if orig and (o["comment"] in (COMMENT_MASK, "") ) and any(denied_wallet(C, u, orig.get(k)) for k in ("from", "to")):
+        o["comment"] = orig.get("comment") or ""   # ДР-02-10.11.2026: замаскированный комментарий не перезаписывает исходный
     errors = []
     ld = s(src.get("linkedDoc")) if not orig else None
     if ld:
@@ -579,6 +593,20 @@ def create_contract(C, u, p):
 
 
 # ================= входящие остатки (ТР-21, ТР-22) =================
+def opening_control_value(C, acc_id, cur, d0):
+    """Контрольный остаток позиции на дату начала учёта (ТР-22): Daily Balance (Б − исходящие в пути), иначе остаток 1С.
+    Тот же порядок, что показывает форма «Входящие остатки». None — контрольных данных нет."""
+    from .daily import opening_control
+    k = opening_control(C).get(f"{acc_id}|{cur}")
+    if k:
+        return {"src": "db", "sum": k["bp"]}
+    a = C.acc(acc_id)
+    for b in C.S["bal1c"]:
+        if b["acc"] == acc_id and (b.get("cur") or (a or {}).get("cur")) == cur and b["date"] == d0 and is_num(b.get("sum")):
+            return {"src": "1c", "sum": r2(b["sum"])}
+    return None
+
+
 def save_opening(C, u, acc_id, rows, cur=None):
     need_admin(u)
     d0 = C.S["settings"].get("startDate")
@@ -603,6 +631,14 @@ def save_opening(C, u, acc_id, rows, cur=None):
             raise ApiError(["Кошелёк указан дважды"])
         seen.add(w)
         clean.append({"id": s(r.get("id")) or uid("OB"), "acc": acc_id, "cur": cur, "wallet": w, "sum": r2(sm)})
+    # ДР-03-10.11.2026 (ТР-22): сумма по кошелькам должна равняться контрольному остатку позиции — проверка до записи,
+    # в исходной валюте; подтверждением обойти нельзя. Ранее сохранённые данные при отказе не меняются.
+    ctl = opening_control_value(C, acc_id, cur, d0)
+    if ctl is not None:
+        diff = r2(r2(sum(x["sum"] for x in clean)) - ctl["sum"])
+        if abs(diff) >= 0.005:
+            raise ApiError([f"Невозможно сохранить входящие остатки. Сумма распределения по кошелькам не соответствует контрольному остатку. "
+                            f"Расхождение: {'+' if diff > 0 else ''}{fmt(diff)} {cur_code(C, cur)}. Исправьте распределение перед сохранением"])
     mine = [x for x in C.S["opening"] if x["acc"] == acc_id and (x.get("cur") or a["cur"]) == cur]
     before = "; ".join(f"{nm(C.get('wallets', x['wallet']))}: {fmt(x['sum'])}" for x in mine)
     for x in mine:

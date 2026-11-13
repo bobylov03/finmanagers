@@ -55,6 +55,8 @@ const TR_PATTERNS = [
   [/^Курсы (\S+): нет курса за рабочие дни (.+?) — на эти даты USD-показатели будут предварительными; запросите курсы при следующем обмене \(ДР-02-23\.10\)$/s, (c,d)=>`Rates ${c}: no rate for working days ${d.replace(/ и ещё /," and more ")} — USD figures for these dates will be preliminary; request the rates in the next exchange (CR-02-23.10)`],
   [/^Документов с этими GUID ещё нет: (\d+) — признаки сохранятся и применятся при загрузке отчёта .+$/s, n=>`No documents with these GUIDs yet: ${n} — the flags are saved and applied when the Approval history report is loaded`],
   [/^Неподдерживаемый формат файла «История согласования»: (.+)$/s, x=>`Unsupported “Approval history” file format: ${x.replace(/нет обязательных столбцов/g,"missing required columns").replace(/устаревшие столбцы, исключённые из формата/g,"obsolete columns removed from the format").replace(/лишние или переименованные столбцы/g,"extra or renamed columns").replace(/столбцы повторяются/g,"duplicated columns").replace(/нарушен порядок столбцов/g,"wrong column order").replace(/ожидается/g,"expected").replace(/в файле/g,"in file").replace(/на месте/g,"at position")}`],
+  // ДР-03-10.11.2026: запрет сохранения несбалансированных входящих остатков
+  [/^Невозможно сохранить входящие остатки\. Сумма распределения по кошелькам не соответствует контрольному остатку\. Расхождение: (.+?)\. Исправьте распределение перед сохранением$/s, x=>`Opening balances cannot be saved. The wallet distribution total does not match the control balance. Difference: ${x}. Correct the distribution before saving`],
 ];
 function tr(text){
   if(LANG==="ru" || !text || !/[А-Яа-яЁё]/.test(text)) return text;

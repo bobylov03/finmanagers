@@ -1915,4 +1915,9 @@ Object.assign(I18N, {
 "Последняя загрузка с ошибками — {0}, см. {1}.": "Last upload with errors — {0}, see {1}.",
 "Пока курс не получен, {0}-показатели отчётов {1}, {2} и {3} считаются по последнему доступному курсу и помечены {4}. Загрузите недостающие курсы файлом (временный режим, {5}); после загрузки отчёты пересчитаются сами.": "Until the rate is received, {0} figures in the {1}, {2} and {3} reports use the latest available rate and are marked {4}. Upload the missing rates as a file (temporary mode, {5}); the reports recalculate after upload.",
 "не было": "none",
+"Логин / ID пользователя": "Login / user ID",
+"Комментарий скрыт из-за ограничений доступа": "Comment hidden due to access restrictions",
+"Текст скрыт из-за ограничений доступа": "Text hidden due to access restrictions",
+"Сторона относится к кошельку, к которому у вас нет доступа ({0})": "This side belongs to a wallet you have no access to ({0})",
+"В операции участвует кошелёк, к которому у вас нет доступа ({0})": "The operation involves a wallet you have no access to ({0})",
 });

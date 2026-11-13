@@ -284,7 +284,8 @@ function exportTable(tableId, name){
     [...tr.children].forEach(td=>{
       while(taken.has(ri+":"+ci)) ci++;
       const cs = Math.max(1, +td.getAttribute("colspan")||1), rs = Math.max(1, +td.getAttribute("rowspan")||1);
-      let v = (td.tagName==="TH" ? td.textContent : td.innerText).replace(/[\u00a0\u202f]/g," ").replace(/\s*\n\s*/g,"; ").trim();
+      // ДР-01-10.11.2026: «было/стало» журнала и версий выгружается дословно, как в интерфейсе (поля — с новой строки)
+      let v = td.classList.contains("aud-det") ? td.textContent : (td.tagName==="TH" ? td.textContent : td.innerText).replace(/[\u00a0\u202f]/g," ").replace(/\s*\n\s*/g,"; ").trim();
       if(td.tagName!=="TH" && td.classList.contains("num")){ const n = parseNum(v.replace(/^≈\s*/,"").replace(/^\+/,"").replace(/[A-Z]{3}$/,"").trim()); if(isFinite(n)) v = n; }
       row[ci] = ri < headN ? {v, bold:true} : v;
       for(let r=0;r<rs;r++) for(let c=0;c<cs;c++){ taken.add((ri+r)+":"+(ci+c)); if(r||c){ (rows[ri+r] = rows[ri+r] || [])[ci+c] = rows[ri+r][ci+c] ?? ""; } }

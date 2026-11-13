@@ -267,6 +267,7 @@ function viewOpening(){
         <td style="font-size:11px">${rows.map(x=>`${esc(nm(wal(x.wallet)))}: ${fmt(x.sum)}`).join("<br>")}</td>
         <td>${locked?"":`<button class="btn sm" onclick="openOpening('${a.id}','${cur}')">Изменить</button>`}</td></tr>`; }).join("") || `<tr><td colspan="9" class="muted">Нет счетов и касс — загрузите справочники 1С</td></tr>`}</tbody></table></div></div></div>`;
 }
+const obDiffMsg = (diff, cur) => `Невозможно сохранить входящие остатки. Сумма распределения по кошелькам не соответствует контрольному остатку. Расхождение: ${fmtS(diff)} ${curCode(cur)}. Исправьте распределение перед сохранением`;
 function openOpening(accId, cur){
   const a = acc(accId); const d0 = DB.settings.startDate; cur = cur || a.cur;
   OB = {acc:accId, cur, rows: DB.opening.filter(x=>x.acc===accId && (x.cur||a.cur)===cur).map(x=>clone(x))};
@@ -279,6 +280,7 @@ function openOpening(accId, cur){
         <td><button class="btn sm" onclick="OB.rows.splice(${i},1);refreshModal()">✕</button></td></tr>`).join("")}
       <tr class="tot"><td>Сумма кошельков</td><td class="num">${fmt(s)} ${esc(curCode(cur))}</td><td></td></tr></tbody></table>
       <button class="btn sm" style="margin-top:8px" onclick="OB.rows.push({id:uid('OB'),acc:'${accId}',cur:'${cur}',wallet:'',sum:null});refreshModal()">Добавить кошелёк</button>
+      ${OB.err && !(diff!==null && Math.abs(diff)<0.005)?`<div class="alert err" style="margin-top:12px">${esc(OB.err)}</div>`:""}
       <div class="alert ${diff===null?"warn":Math.abs(diff)<0.005?"ok":"err"}" style="margin-top:12px">${diff===null?`Нет ни отчёта Daily Balance на утро ${fmtD(d0)}, ни остатка 1С на эту дату — контроль ТР-22 невозможен.`:Math.abs(diff)<0.005?`Совпадает с контрольным остатком ${fmt(c.sum)} (${esc(obSrc(c))})`:`Расхождение: ${fmtS(diff)} ${esc(curCode(cur))}. Контрольный остаток ${fmt(c.sum)} — ${esc(obSrc(c))}`}</div>`; },
     footer:()=>`<button class="btn" onclick="closeModal()">Отмена</button><button class="btn primary" onclick="saveOpening()">Сохранить</button>`});
 }
@@ -288,9 +290,11 @@ async function saveOpening(){
   if(rows.some(x=>!x.wallet || !isFinite(x.sum))){ alert("В каждой строке нужны кошелёк и сумма"); return; }
   if(new Set(rows.map(x=>x.wallet)).size!==rows.length){ alert("Кошелёк указан дважды"); return; }
   const s = r2(rows.reduce((t,x)=>t+x.sum,0)); const c = obControl(OB.acc, OB.cur);
-  if(c && Math.abs(s-c.sum)>=0.005 && !confirm(`Сумма кошельков ${fmt(s)} не равна контрольному остатку ${fmt(c.sum)} (${obSrc(c)}). Сохранить с расхождением?`)) return;
+  // ДР-03-10.11.2026 (ТР-22): несбалансированное распределение не сохраняется — без «Сохранить с расхождением?»; форма остаётся открытой для исправления
+  OB.err = "";
+  if(c && Math.abs(r2(s-c.sum))>=0.005){ OB.err = obDiffMsg(r2(s-c.sum), OB.cur); refreshModal(); return; }
   const r = await mutate(`/api/opening/${encodeURIComponent(OB.acc)}`, {cur:OB.cur, rows:rows.map(x=>({id:x.id, wallet:x.wallet, sum:x.sum}))});
-  if(!r.ok) return showErrors(r);
+  if(!r.ok){ OB.err = (r.errors||[]).join(" "); refreshModal(); return; }
   closeModal();
 }
 /* ============================================================
@@ -663,6 +667,8 @@ async function loadAudit(){
   const r = await apiRaw("/api/audit?" + q);
   AUD = r.ok ? r.rows : []; AUD_KEY = q; render();
 }
+/** ДР-01-10.11.2026: идентификатор пользователя — логин и внутренний ID */
+function audUid(a){ if(!a.user_id) return "—"; const x = usr(a.user_id); return x && x.login ? `${x.login} (${a.user_id})` : a.user_id; }
 function viewAudit(){
   const q = new URLSearchParams({user:AF.u, q:AF.q, from:AF.from, to:AF.to}).toString();
   if(AUD===null || AUD_KEY!==q){ AUD_KEY = q; setTimeout(loadAudit, 0); }
@@ -675,8 +681,8 @@ function viewAudit(){
     <label class="fld"><span>По</span><input type="date" value="${AF.to}" onchange="AF.to=this.value;render()"></label>
     <label class="fld"><span>Поиск</span><input type="text" value="${esc(AF.q)}" onchange="AF.q=this.value;render()"></label>
     <div style="flex:1"></div><button class="btn" onclick="AUD=null;render()">Обновить</button>${exportBtn("tAud","Журнал аудита")}</div></div>
-  <div class="panel"><div class="body flush"><div class="tbl-wrap"><table id="tAud"><thead><tr><th>Время</th><th>Пользователь</th><th>Действие</th><th>Объект</th><th>Подробности</th></tr></thead>
-  <tbody>${AUD===null?`<tr><td colspan="5" class="muted">Загрузка…</td></tr>`:list.map(a=>`<tr><td style="white-space:nowrap">${fmtDT(a.t)}</td><td class="notr">${esc(a.uname)}</td><td>${esc(a.action)}</td><td class="notr">${esc(a.object)}</td><td class="notr" style="font-size:11px;max-width:520px">${esc(a.details)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Записей нет</td></tr>`}</tbody></table></div></div></div>`;
+  <div class="panel"><div class="body flush"><div class="tbl-wrap"><table id="tAud"><thead><tr><th>Время</th><th>Пользователь</th><th>Логин / ID пользователя</th><th>Действие</th><th>Объект</th><th>Подробности</th></tr></thead>
+  <tbody>${AUD===null?`<tr><td colspan="6" class="muted">Загрузка…</td></tr>`:list.map(a=>`<tr><td style="white-space:nowrap">${fmtDT(a.t)}</td><td class="notr">${esc(a.uname)}</td><td class="notr" style="font-size:11px">${esc(audUid(a))}</td><td>${esc(a.action)}</td><td class="notr">${esc(a.object)}</td><td class="notr aud-det">${esc(a.details)}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Записей нет</td></tr>`}</tbody></table></div></div></div>`;
 }
 /* ============================================================
    23. РАССЫЛКА УВЕДОМЛЕНИЙ (ТР-18, ТР-24, ТР-42, ТР-56, ТР-57)
